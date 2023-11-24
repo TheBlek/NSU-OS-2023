@@ -14,6 +14,8 @@ struct command {
 #define INFILE     0x08
 #define INPIPE     0x10
 
+#define OUTREDIR   0x07
+
 extern struct command cmds[];
 extern char *infile, *outfile, *appfile;
 extern char bkgrnd;

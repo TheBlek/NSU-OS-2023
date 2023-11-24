@@ -35,11 +35,13 @@ int parseline(char *line) {
                 *s++ = '\0';
                 break;
             case '>':
+                // The last indirection to output is used
+                cmds[ncmds].cmdflag = (cmds[ncmds].cmdflag & ~OUTREDIR);
                 if (*(s+1) == '>') {
                     *s++ = '\0';
-                    cmds[ncmds].cmdflag = OUTFILEAP;
+                    cmds[ncmds].cmdflag |= OUTFILEAP;
                 } else {
-                    cmds[ncmds].cmdflag = OUTFILE;
+                    cmds[ncmds].cmdflag |= OUTFILE;
                 }
                 *s++ = '\0';
                 s = blankskip(s);
@@ -61,12 +63,13 @@ int parseline(char *line) {
                     return(-1);
                 }
                 cmds[ncmds].infile = s;
+                cmds[ncmds].cmdflag |= INFILE;
                 s = strpbrk(s, delim);
                 if (isspace(*s))
                     *s++ = '\0';
                 break;
             case '|':
-                if (nargs == 0 || (cmds[ncmds].cmdflag & (OUTFILE | OUTFILEAP))) {
+                if (nargs == 0 || (cmds[ncmds].cmdflag & OUTREDIR)) {
                     fprintf(stderr, "syntax error\n");
                     return(-1);
                 }
@@ -105,6 +108,10 @@ int parseline(char *line) {
             fprintf(stderr, "syntax error\n");
             return(-1);
         }
+    }
+
+    if (rval > 1 && bkgrnd) {
+        return -1;
     }
     return(rval);
 }
