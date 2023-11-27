@@ -1,0 +1,6 @@
+#!/usr/bin/bash
+if ~/expect $1; then
+    echo "Success!"
+else
+    echo "Failure!"
+fi

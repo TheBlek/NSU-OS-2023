@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <wait.h>
+#include <termios.h>
 
 #define JOBS_BUFFER_SIZE 128
 
@@ -98,8 +99,10 @@ int main() {
     int shell_terminal = STDIN_FILENO;
     assert(isatty(shell_terminal));
 
-    if (setpgid(shell_pgid, shell_pgid) != 0) {
-        perror("Couldn't put shell into it's own process group");
+    if (shell_pgid != getpgid(shell_pgid)) {
+        if (setpgid(shell_pgid, shell_pgid) != 0) {
+            perror("Couldn't put shell into it's own process group");
+        }
     }
     if (tcsetpgrp(shell_terminal, shell_pgid) != 0) {
         perror("Failed to take control over terminal");
@@ -109,7 +112,19 @@ int main() {
     sigignore(SIGQUIT);
     sigignore(SIGTTOU);
 
-    sprintf(prompt,"[shell] ");
+    struct termios orig_term, cur_term; 
+    if (tcgetattr(STDIN_FILENO, &orig_term) != 0) {
+        perror("Failed to get terminal attributes"); 
+    }
+
+    cur_term = orig_term;
+    cur_term.c_oflag = (cur_term.c_oflag & ~TABDLY) | TAB0;
+
+    if (tcsetattr(STDIN_FILENO, TCSANOW, &cur_term) != 0) {
+        perror("Failed to set new terminal attributes");    
+    }
+
+    sprintf(prompt,"shell: ");
 
     while (promptline(prompt, line, sizeof(line)) > 0) {    /* until eof  */
         // Check for completed jobs

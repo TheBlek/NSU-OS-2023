@@ -1,0 +1,14 @@
+set timeout 1
+spawn ./shell
+expect "shell: "
+send -- "cat testfile.txt\r"
+expect {
+    "cat testfile.txt\r
+line1\r
+line2\r
+line3\r
+    lastline\r" {}
+    timeout { exit 1 } 
+}
+send \x04
+expect eof
