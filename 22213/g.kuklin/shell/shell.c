@@ -105,10 +105,9 @@ int main() {
         perror("Failed to take control over terminal");
     }
 
-    // TODO(theblek): Rewrite for empty signal handler that repeats itself
-    signal(SIGINT, SIG_IGN);
-    signal(SIGQUIT, SIG_IGN);
-    signal(SIGTTOU, SIG_IGN);
+    sigignore(SIGINT);
+    sigignore(SIGQUIT);
+    sigignore(SIGTTOU);
 
     sprintf(prompt,"[shell] ");
 
