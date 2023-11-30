@@ -112,18 +112,6 @@ int main() {
     sigignore(SIGQUIT);
     sigignore(SIGTTOU);
 
-    struct termios orig_term, cur_term; 
-    if (tcgetattr(STDIN_FILENO, &orig_term) != 0) {
-        perror("Failed to get terminal attributes"); 
-    }
-
-    cur_term = orig_term;
-    cur_term.c_oflag = (cur_term.c_oflag & ~TABDLY) | TAB0;
-
-    if (tcsetattr(STDIN_FILENO, TCSANOW, &cur_term) != 0) {
-        perror("Failed to set new terminal attributes");    
-    }
-
     sprintf(prompt,"shell: ");
 
     while (promptline(prompt, line, sizeof(line)) > 0) {    /* until eof  */

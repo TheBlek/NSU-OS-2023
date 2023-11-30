@@ -1,5 +1,5 @@
 set timeout 1
-spawn ./shell
+spawn shell
 expect "shell: "
 send -- "cat testfile.txt\r"
 expect {
@@ -7,7 +7,8 @@ expect {
 line1\r
 line2\r
 line3\r
-    lastline\r" {}
+    lastline\r
+shell: " {}
     timeout { exit 1 } 
 }
 send \x04

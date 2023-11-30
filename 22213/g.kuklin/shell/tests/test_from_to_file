@@ -1,0 +1,11 @@
+set timeout 1
+spawn shell
+expect "shell: "
+send -- "grep last < testfile.txt > test_output.txt\r"
+expect {
+    "grep last < testfile.txt > test_output.txt\r
+shell: " {}
+    timeout { exit 1 } 
+}
+send \x04
+expect eof

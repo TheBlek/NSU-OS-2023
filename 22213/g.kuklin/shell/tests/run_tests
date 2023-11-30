@@ -1,0 +1,21 @@
+#!/usr/bin/bash
+
+echo ""
+echo "Simple cat"
+./run_test -t simple_test
+
+echo ""
+echo "Simple cat with redirect to file"
+./run_test -e testfile.txt -a testfile2.txt -t test_to_file
+
+echo ""
+echo "Grep with redirect from file"
+./run_test -t test_from_file
+
+echo ""
+echo "Grep with redirect from file to file"
+./run_test -a test_output.txt -e testfile_last.txt -t test_from_to_file
+
+echo ""
+echo "Grep with redirect to file from file"
+./run_test -a test_output.txt -e testfile_last.txt -t test_to_from_file

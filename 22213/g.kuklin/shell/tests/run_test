@@ -1,0 +1,47 @@
+#!/usr/bin/bash
+
+while getopts ":a:e:t:" flag; do
+    case "${flag}" in
+        a)
+            actualFile=${OPTARG}
+            ;;
+        e)
+            expectedFile=${OPTARG}
+            ;;
+        t)
+            testFile=${OPTARG}
+            ;;
+
+    esac
+done
+
+if [[ ${testFile} = "" ]]; then
+    echo "No test file provided"
+    exit 1
+fi
+
+if [[ ${actualFile} != "" && ${expectedFile} = "" ]]; then
+    echo "No expected file provided to check against"
+    exit 1
+fi
+
+if [[ ${expectedFile} != "" && ${actualFile} = "" ]]; then
+    echo "No actual file provided to test"
+    exit 1
+fi
+
+export PATH=~/shell:$PATH
+
+if ~/expect ${testFile}; then
+    echo ""
+    if [[ ${expectedFile} = "" || $(cmp -s ${expectedFile} ${actualFile})$? ]]; then
+        echo "Success"
+        exit 0
+    else
+        echo "Failure: Output file is different"
+        exit 1
+    fi
+else
+    echo "Failure: Couldn't get through interaction"
+    exit 1
+fi
