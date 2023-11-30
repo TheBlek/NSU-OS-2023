@@ -9,7 +9,7 @@ int parseline(char *line) {
     register char *s;
     int rval;
     register int i;
-    static char delim[] = " \t|&<>;\n";
+    static char delim[] = " \t|&<>;\n\0";
 
     /* initialize  */
     bkgrnd = nargs = ncmds = rval = 0;
@@ -90,9 +90,16 @@ int parseline(char *line) {
 
                 cmds[ncmds].cmdargs[nargs++] = s;
                 cmds[ncmds].cmdargs[nargs] = (char *) NULL;
-                s = strpbrk(s, delim);
-                if (isspace(*s))
+                char *s1 = strpbrk(s, delim);
+                if (!s1) {
+                    s1 = s;
+                    while (*s1 != '\0')
+                        s1++;
+                }
+                s = s1;
+                if (isspace(*s)) {
                     *s++ = '\0';
+                }
                 break;
             }  /*  close switch  */
     }  /* close while  */

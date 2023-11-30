@@ -64,6 +64,9 @@ void execute_command(int id, int shell_terminal) {
     exit(1);
 }
 
+// TODO(theblek): make this a linked list of jobs by encoding next free as a negative number
+static pid_t jobs[JOBS_BUFFER_SIZE] = {0};
+
 int add_job(pid_t job, pid_t *jobs, int *next_job) {
     if (*next_job == -1) {
         printf("Out of job slots");
@@ -92,8 +95,6 @@ int main() {
     int ncmds;
     char prompt[50];      /* shell prompt */
 
-    // TODO(theblek): make this a linked list of jobs by encoding next free as a negative number
-    pid_t jobs[JOBS_BUFFER_SIZE] = {0};
     int next_job = 0;
 
     pid_t shell_pgid = getpid();
