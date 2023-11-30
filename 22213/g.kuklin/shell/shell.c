@@ -17,8 +17,9 @@
 
 struct command cmds[MAXCMDS];
 char bkgrnd;
+volatile int should_put_back = 0;
 
-void send_to_active(int); 
+void put_to_background(int); 
 
 void execute_command(int id, int shell_terminal) {
     signal(SIGINT, SIG_DFL);
@@ -175,8 +176,12 @@ int main() {
                         if (tcsetpgrp(shell_terminal, child) != 0) {
                             perror("Failed to set new pg a foreground process group");
                         }
-                        if (waitid(P_PID, child, &child_info, WEXITED) == -1 && errno != EINTR) {
+                        if (waitid(P_PID, child, &child_info, WEXITED | WSTOPPED) == -1) {
                             perror("Failed to wait for child");
+                        }
+                        if (child_info.si_code == CLD_STOPPED) {
+                            add_job(child, jobs, &next_job);
+                            kill(child, SIGCONT);
                         }
                         if (tcsetpgrp(shell_terminal, shell_pgid) != 0) {
                             perror("Failed to set shell to foreground");
