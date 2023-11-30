@@ -67,26 +67,26 @@ void execute_command(int id, int shell_terminal) {
 // TODO(theblek): make this a linked list of jobs by encoding next free as a negative number
 static pid_t jobs[JOBS_BUFFER_SIZE] = {0};
 
-int add_job(pid_t job, pid_t *jobs, int *next_job) {
+int add_job(pid_t job, int *next_job) {
     if (*next_job == -1) {
         printf("Out of job slots");
         return -1;
     }
-    printf("[%d] %d\n", *next_job, job);
-    jobs[*next_job] = job;
+    int job_id = *next_job;
+    printf("[%d] %d\n", job_id, job);
+    jobs[job_id] = job;
     // Find next free job handle
-    int initial = *next_job;
     (*next_job)++;
-    while (jobs[*next_job] != 0 && *next_job != initial) {
+    while (jobs[*next_job] != 0 && *next_job != job_id) {
         (*next_job)++;
         if (*next_job == JOBS_BUFFER_SIZE) {
             *next_job = 0;
         }
     }
-    if (*next_job == initial) {
+    if (*next_job == job_id) {
         *next_job = -1; // There is no empty slot
     }
-    return 0;
+    return job_id;
 }
 
 int main() {
@@ -96,6 +96,7 @@ int main() {
     char prompt[50];      /* shell prompt */
 
     int next_job = 0;
+    int current_job = -1;
 
     pid_t shell_pgid = getpid();
     int shell_terminal = STDIN_FILENO;
@@ -146,6 +147,7 @@ int main() {
         #ifdef DEBUG
         {
             fprintf(stderr, "ncmds = %d\n", ncmds);
+            fprintf(stderr, "bkgrnd = %d\n", bkgrnd);
             int i, j;
             for (i = 0; i < ncmds; i++) {
                 for (j = 0; cmds[i].cmdargs[j] != (char *) NULL; j++)
@@ -158,6 +160,26 @@ int main() {
         for (i = 0; i < ncmds; i++) {
             pid_t child;
             siginfo_t child_info;
+            if (strcmp("fg", cmds[i].cmdargs[0]) == 0) {
+                child = jobs[current_job];
+                if (tcsetpgrp(shell_terminal, child) != 0) {
+                    perror("Failed to set new pg a foreground process group");
+                }
+                if (waitid(P_PID, child, &child_info, WEXITED | WSTOPPED) == -1) {
+                    perror("Failed to wait for child");
+                }
+                if (child_info.si_code == CLD_STOPPED) {
+                    add_job(child, &next_job);
+                    current_job = child;
+                    kill(child, SIGCONT);
+                }
+                if (tcsetpgrp(shell_terminal, shell_pgid) != 0) {
+                    perror("Failed to set shell to foreground");
+                }
+                jobs[current_job] = 0;
+                current_job = -1;
+                continue;
+            }
             switch (child = fork()) {
                 case -1:
                     perror("Failed to fork");
@@ -172,7 +194,7 @@ int main() {
                         perror("Failed to set child process group");    
                     }
                     if (bkgrnd) {
-                        add_job(child, jobs, &next_job);
+                        current_job = add_job(child, &next_job);
                     } else {
                         if (tcsetpgrp(shell_terminal, child) != 0) {
                             perror("Failed to set new pg a foreground process group");
@@ -181,7 +203,7 @@ int main() {
                             perror("Failed to wait for child");
                         }
                         if (child_info.si_code == CLD_STOPPED) {
-                            add_job(child, jobs, &next_job);
+                            current_job = add_job(child, &next_job);
                             kill(child, SIGCONT);
                         }
                         if (tcsetpgrp(shell_terminal, shell_pgid) != 0) {
