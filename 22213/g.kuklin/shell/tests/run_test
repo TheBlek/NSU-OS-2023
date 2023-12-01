@@ -34,7 +34,7 @@ export PATH=~/shell:$PATH
 
 if ~/expect ${testFile}; then
     echo ""
-    if [[ ${expectedFile} = "" || $(cmp -s ${expectedFile} ${actualFile})$? ]]; then
+    if [[ ${expectedFile} = "" || $(cmp -s ${expectedFile} ${actualFile})$? = 0 ]]; then
         echo "Success"
         exit 0
     else

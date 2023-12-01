@@ -1,4 +1,6 @@
 #!/usr/bin/bash
+# Early exit on fail test
+set -e
 
 echo ""
 echo "Simple cat"
@@ -6,7 +8,13 @@ echo "Simple cat"
 
 echo ""
 echo "Simple cat with redirect to file"
-./run_test -e testfile.txt -a testfile2.txt -t test_to_file
+./run_test -e testfile.txt -a test_output.txt -t test_to_file
+rm test_output.txt
+
+echo ""
+echo "Simple cat with redirect to file and append"
+./run_test -e testfile_double.txt -a test_output.txt -t test_append_file
+rm test_output.txt
 
 echo ""
 echo "Grep with redirect from file"
@@ -15,7 +23,14 @@ echo "Grep with redirect from file"
 echo ""
 echo "Grep with redirect from file to file"
 ./run_test -a test_output.txt -e testfile_last.txt -t test_from_to_file
+rm test_output.txt
+
+echo ""
+echo "Grep with redirect from file append file"
+./run_test -a test_output.txt -e testfile_last_double.txt -t test_from_append_file
+rm test_output.txt
 
 echo ""
 echo "Grep with redirect to file from file"
 ./run_test -a test_output.txt -e testfile_last.txt -t test_to_from_file
+rm test_output.txt

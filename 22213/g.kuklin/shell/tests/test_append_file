@@ -7,5 +7,11 @@ expect {
 shell: " {}
     timeout { exit 1 } 
 }
+send -- "cat testfile.txt >> test_output.txt\r"
+expect {
+    "cat testfile.txt >> test_output.txt\r
+shell: " {}
+    timeout { exit 1 } 
+}
 send \x04
 expect eof
