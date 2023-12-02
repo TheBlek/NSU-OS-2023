@@ -108,14 +108,14 @@ void handle_child(pid_t child) {
     if (job == -1) return;
 
     if (bkgrnd) {
-        printf("[%d] %d\n", job, child);
+        printf("[%d] %d\n", job + 1, child);
         fflush(stdout);
         return;
     }
     if (wait_for_job(job)) {
         job_count--;
     } else {
-        printf("\n[%d] Stopped\n", job);
+        printf("\n[%d] Stopped\n", job + 1);
         fflush(stdout);
     }
 }
@@ -150,14 +150,14 @@ int main() {
         for (int i = 0; i < job_count; i++) {
             siginfo_t info;
             if (waitid(P_PID, jobs[i], &info, WEXITED | WNOHANG) != 0) {
-                fprintf(stderr, "Job %d failed\n", jobs[i]);
+                fprintf(stderr, "Job %d (process %d) failed\n", i + 1, jobs[i]);
                 perror("Failed to wait for a job");
                 continue;
             }
 
             if (info.si_pid == 0) continue;
 
-            printf("[%d] %d Finished\n", i, info.si_pid);
+            printf("[%d] %d Finished\n", i+1, info.si_pid);
             memmove(&jobs[i], &jobs[i+1], sizeof(pid_t) * (job_count - i));
             job_count--;
         }
@@ -184,12 +184,27 @@ int main() {
         for (i = 0; i < ncmds; i++) {
             pid_t child;
             if (strcmp("fg", cmds[i].cmdargs[0]) == 0) {
-                if (job_count == 0) continue;
+                if (job_count == 0) {
+                    fprintf(stderr, "No jobs to put to foreground\n");
+                    fflush(stderr);    
+                    continue;
+                }
 
-                if (wait_for_job(job_count - 1)) {
+                int job = job_count - 1;
+                if (cmds[i].cmdargs[1]) {
+                    int arg = atoi(cmds[i].cmdargs[1]);
+                    if (arg <= 0 || arg > job_count) {
+                        fprintf(stderr, "Invalid job index\n");
+                        fflush(stderr);
+                        continue;
+                    }
+                    job = arg - 1;
+                }
+
+                if (wait_for_job(job)) {
                     job_count--;
                 } else {
-                    printf("\n[%d] Stopped\n", job_count - 1);
+                    printf("\n[%d] Stopped\n", job + 1);
                     fflush(stdout);
                 }
                 continue;
