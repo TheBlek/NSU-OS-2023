@@ -79,10 +79,10 @@ int add_job(pid_t job) {
     return job_id;
 }
 
-int wait_for_job(int id) {
-    assert(id < job_count);
+int wait_for_job(int job) {
+    assert(job < job_count);
 
-    pid_t pid = jobs[id];
+    pid_t pid = jobs[job];
     siginfo_t info;
     if (tcsetpgrp(shell_terminal, pid) != 0) {
         perror("Failed to set new pg a foreground process group");
@@ -118,12 +118,11 @@ void handle_child(pid_t child) {
         fflush(stdout);
     }
 }
-
-void put_to_foreground(int id) {
+int get_job_from_argument(int id) {
     if (job_count == 0) {
-        fprintf(stderr, "No jobs to put to foreground\n");
+        fprintf(stderr, "No jobs to manipulate\n");
         fflush(stderr);    
-        return;
+        return -1;
     }
 
     int job = job_count - 1;
@@ -131,18 +130,26 @@ void put_to_foreground(int id) {
         if (cmds[id].cmdargs[2]) {
             fprintf(stderr, "Invalid number of arguments\n");
             fflush(stderr);
-            return;
+            return -1;
         }
         int arg = atoi(cmds[id].cmdargs[1]);
         if (arg <= 0 || arg > job_count) {
             fprintf(stderr, "Invalid job index\n");
             fflush(stderr);
-            return;
+            return -1;
         }
         job = arg - 1;
     }
+    return job;
+}
 
+void put_to_foreground(int id) {
+    int job = get_job_from_argument(id);    
+    if (job == -1) return;
+
+    kill(jobs[job], SIGCONT);
     if (wait_for_job(job)) {
+        memmove(&jobs[job], &jobs[job+1], sizeof(pid_t) * (job_count - job));
         job_count--;
     } else {
         printf("\n[%d] %d Stopped\n", job + 1, jobs[job]);
@@ -151,27 +158,8 @@ void put_to_foreground(int id) {
 }
 
 void put_to_background(int id) {
-    if (job_count == 0) {
-        fprintf(stderr, "No jobs to put to background\n");
-        fflush(stderr);    
-        return;
-    }
-
-    int job = job_count - 1;
-    if (cmds[id].cmdargs[1]) {
-        if (cmds[id].cmdargs[2]) {
-            fprintf(stderr, "Invalid number of arguments\n");
-            fflush(stderr);
-            return;
-        }
-        int arg = atoi(cmds[id].cmdargs[1]);
-        if (arg <= 0 || arg > job_count) {
-            fprintf(stderr, "Invalid job index\n");
-            fflush(stderr);
-            return;
-        }
-        job = arg - 1;
-    }
+    int job = get_job_from_argument(id);    
+    if (job == -1) return;
 
     kill(jobs[job], SIGCONT);
 }
