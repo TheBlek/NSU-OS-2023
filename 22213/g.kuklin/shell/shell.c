@@ -115,7 +115,7 @@ void handle_child(pid_t child) {
     if (wait_for_job(job)) {
         job_count--;
     } else {
-        printf("\n[%d] Stopped\n", job + 1);
+        printf("\n[%d] %d Stopped\n", job + 1, child);
         fflush(stdout);
     }
 }
@@ -192,6 +192,11 @@ int main() {
 
                 int job = job_count - 1;
                 if (cmds[i].cmdargs[1]) {
+                    if (cmds[i].cmdargs[2]) {
+                        fprintf(stderr, "Invalid number of arguments\n");
+                        fflush(stderr);
+                        continue;
+                    }
                     int arg = atoi(cmds[i].cmdargs[1]);
                     if (arg <= 0 || arg > job_count) {
                         fprintf(stderr, "Invalid job index\n");
@@ -204,7 +209,7 @@ int main() {
                 if (wait_for_job(job)) {
                     job_count--;
                 } else {
-                    printf("\n[%d] Stopped\n", job + 1);
+                    printf("\n[%d] %d Stopped\n", job + 1, jobs[job]);
                     fflush(stdout);
                 }
                 continue;
