@@ -94,7 +94,6 @@ int wait_for_job(int id) {
         perror("Failed to set shell to foreground");
     }
     if (info.si_code == CLD_STOPPED) {
-        kill(pid, SIGCONT);
         return 0;
     }
     return 1;
@@ -118,6 +117,63 @@ void handle_child(pid_t child) {
         printf("\n[%d] %d Stopped\n", job + 1, child);
         fflush(stdout);
     }
+}
+
+void put_to_foreground(int id) {
+    if (job_count == 0) {
+        fprintf(stderr, "No jobs to put to foreground\n");
+        fflush(stderr);    
+        return;
+    }
+
+    int job = job_count - 1;
+    if (cmds[id].cmdargs[1]) {
+        if (cmds[id].cmdargs[2]) {
+            fprintf(stderr, "Invalid number of arguments\n");
+            fflush(stderr);
+            return;
+        }
+        int arg = atoi(cmds[id].cmdargs[1]);
+        if (arg <= 0 || arg > job_count) {
+            fprintf(stderr, "Invalid job index\n");
+            fflush(stderr);
+            return;
+        }
+        job = arg - 1;
+    }
+
+    if (wait_for_job(job)) {
+        job_count--;
+    } else {
+        printf("\n[%d] %d Stopped\n", job + 1, jobs[job]);
+        fflush(stdout);
+    }
+}
+
+void put_to_background(int id) {
+    if (job_count == 0) {
+        fprintf(stderr, "No jobs to put to background\n");
+        fflush(stderr);    
+        return;
+    }
+
+    int job = job_count - 1;
+    if (cmds[id].cmdargs[1]) {
+        if (cmds[id].cmdargs[2]) {
+            fprintf(stderr, "Invalid number of arguments\n");
+            fflush(stderr);
+            return;
+        }
+        int arg = atoi(cmds[id].cmdargs[1]);
+        if (arg <= 0 || arg > job_count) {
+            fprintf(stderr, "Invalid job index\n");
+            fflush(stderr);
+            return;
+        }
+        job = arg - 1;
+    }
+
+    kill(jobs[job], SIGCONT);
 }
 
 int main() {
@@ -184,34 +240,11 @@ int main() {
         for (i = 0; i < ncmds; i++) {
             pid_t child;
             if (strcmp("fg", cmds[i].cmdargs[0]) == 0) {
-                if (job_count == 0) {
-                    fprintf(stderr, "No jobs to put to foreground\n");
-                    fflush(stderr);    
-                    continue;
-                }
-
-                int job = job_count - 1;
-                if (cmds[i].cmdargs[1]) {
-                    if (cmds[i].cmdargs[2]) {
-                        fprintf(stderr, "Invalid number of arguments\n");
-                        fflush(stderr);
-                        continue;
-                    }
-                    int arg = atoi(cmds[i].cmdargs[1]);
-                    if (arg <= 0 || arg > job_count) {
-                        fprintf(stderr, "Invalid job index\n");
-                        fflush(stderr);
-                        continue;
-                    }
-                    job = arg - 1;
-                }
-
-                if (wait_for_job(job)) {
-                    job_count--;
-                } else {
-                    printf("\n[%d] %d Stopped\n", job + 1, jobs[job]);
-                    fflush(stdout);
-                }
+                put_to_foreground(i);
+                continue;
+            }
+            if (strcmp("bg", cmds[i].cmdargs[0]) == 0) {
+                put_to_background(i);
                 continue;
             }
             switch (child = fork()) {
