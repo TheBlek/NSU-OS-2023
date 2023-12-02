@@ -20,8 +20,7 @@ char bkgrnd;
 
 // TODO(theblek): make this a linked list of jobs by encoding next free as a negative number
 static pid_t jobs[JOBS_BUFFER_SIZE] = {0};
-static int next_job = 0;
-static int current_job = -1;
+static int job_count = 0;
 
 static pid_t shell_pgid;
 static int shell_terminal;
@@ -70,27 +69,19 @@ void execute_command(int id) {
 }
 
 int add_job(pid_t job) {
-    if (next_job == -1) {
+    if (job_count == JOBS_BUFFER_SIZE) {
         printf("Out of job slots");
         return -1;
     }
-    int job_id = next_job;
+    int job_id = job_count;
     jobs[job_id] = job;
-    // Find next free job handle
-    next_job++;
-    while (jobs[next_job] != 0 && next_job != job_id) {
-        next_job++;
-        if (next_job == JOBS_BUFFER_SIZE) {
-            next_job = 0;
-        }
-    }
-    if (next_job == job_id) {
-        next_job = -1; // There is no empty slot
-    }
+    job_count++;
     return job_id;
 }
 
 int wait_for_job(int id) {
+    assert(id < job_count);
+
     pid_t pid = jobs[id];
     siginfo_t info;
     if (tcsetpgrp(shell_terminal, pid) != 0) {
@@ -99,16 +90,34 @@ int wait_for_job(int id) {
     if (waitid(P_PID, pid, &info, WEXITED | WSTOPPED) == -1) {
         perror("Failed to wait for child");
     }
-    int exited = 1;
-    if (info.si_code == CLD_STOPPED) {
-        printf("[%d] %d\n", id, pid);
-        kill(pid, SIGCONT);
-        exited = 0;
-    }
     if (tcsetpgrp(shell_terminal, shell_pgid) != 0) {
         perror("Failed to set shell to foreground");
     }
-    return exited;
+    if (info.si_code == CLD_STOPPED) {
+        kill(pid, SIGCONT);
+        return 0;
+    }
+    return 1;
+}
+
+void handle_child(pid_t child) {
+    if (setpgid(child, child) != 0) {
+        perror("Failed to set child process group");    
+    }
+    int job = add_job(child);
+    if (job == -1) return;
+
+    if (bkgrnd) {
+        printf("[%d] %d\n", job, child);
+        fflush(stdout);
+        return;
+    }
+    if (wait_for_job(job)) {
+        job_count--;
+    } else {
+        printf("\n[%d] Stopped\n", job);
+        fflush(stdout);
+    }
 }
 
 int main() {
@@ -138,9 +147,7 @@ int main() {
 
     while (promptline(prompt, line, sizeof(line)) > 0) {    /* until eof  */
         // Check for completed jobs
-        for (int i = 0; i < JOBS_BUFFER_SIZE; i++) {
-            if (!jobs[i]) continue;
-
+        for (int i = 0; i < job_count; i++) {
             siginfo_t info;
             if (waitid(P_PID, jobs[i], &info, WEXITED | WNOHANG) != 0) {
                 fprintf(stderr, "Job %d failed\n", jobs[i]);
@@ -148,14 +155,11 @@ int main() {
                 continue;
             }
 
-            if (info.si_pid != 0) {
-                printf("[%d] %d Finished\n", i, info.si_pid);
-                jobs[i] = 0;
-                next_job = i;
-                if (i == current_job) {
-                    current_job = -1;
-                }
-            }
+            if (info.si_pid == 0) continue;
+
+            printf("[%d] %d Finished\n", i, info.si_pid);
+            memmove(&jobs[i], &jobs[i+1], sizeof(pid_t) * (job_count - i));
+            job_count--;
         }
 
         if ((ncmds = parseline(line)) < 0) {
@@ -180,11 +184,13 @@ int main() {
         for (i = 0; i < ncmds; i++) {
             pid_t child;
             if (strcmp("fg", cmds[i].cmdargs[0]) == 0) {
-                if (current_job < 0) continue;
+                if (job_count == 0) continue;
 
-                if (wait_for_job(current_job)) {
-                    jobs[current_job] = 0;
-                    current_job = -1;
+                if (wait_for_job(job_count - 1)) {
+                    job_count--;
+                } else {
+                    printf("\n[%d] Stopped\n", job_count - 1);
+                    fflush(stdout);
                 }
                 continue;
             }
@@ -198,19 +204,7 @@ int main() {
                     break;
                 default:
                     /* This is a shell process */
-                    if (setpgid(child, child) != 0) {
-                        perror("Failed to set child process group");    
-                    }
-                    if (bkgrnd) {
-                        current_job = add_job(child);
-                        printf("[%d] %d\n", current_job, child);
-                    } else {
-                        current_job = add_job(child);
-                        if (wait_for_job(current_job)) {
-                            jobs[current_job] = 0;
-                            current_job = -1;    
-                        }
-                    }
+                    handle_child(child);
             }
         }
     }/* close while */
