@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdlib.h>
 #include "shell.h"
 
 int promptline(char *prompt, char *line, int sizline) {
@@ -10,6 +11,10 @@ int promptline(char *prompt, char *line, int sizline) {
     write(1, prompt, strlen(prompt));
     while (1) {
         int more = read(0, (line + n), sizline-n);
+        if (more == -1) {
+            perror("Failed to read next prompt");
+            exit(1);
+        }
         if (more == 0) return -1;
 
         n += more;

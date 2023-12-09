@@ -34,6 +34,8 @@ int parseline(char *line) {
                         fprintf(stderr, "Only one \"&\" expected\n");
                         return -1;
                     }
+                    ++ncmds;
+                    nargs = 0;
                     ++bkgrnd;
                 }
                 *s++ = '\0';
