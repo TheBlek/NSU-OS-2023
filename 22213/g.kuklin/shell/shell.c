@@ -274,25 +274,48 @@ int main() {
                             exit(1);
                         }
 
+                        int pipe_ends[2] = {-1, -1};
+                        int pgid = self;
                         for (int i = 0; i < ncmds; i++) {
+                            if (!(cmds[i].cmdflag & INPIPE)) {
+                                pgid = 0;
+                                pipe_ends[0] = -1;
+                                pipe_ends[1] = -1;
+                            }
+                            
+                            int last_pipe[2] = {pipe_ends[0], pipe_ends[1]};
+                            if (last_pipe[0] != -1) {
+                                if (close(last_pipe[0]) == -1) {
+                                    perror("Failed to close prev input pipe");
+                                    fprintf(stderr, "It was %d\n", last_pipe[0]);
+                                    exit(1);
+                                }
+                                last_pipe[0] = -1;
+                            }
+                            if (cmds[i].cmdflag & OUTPIPE) {
+                                if (pipe(pipe_ends) == -1) {
+                                    perror("Failed to open a pipe");
+                                    exit(1);
+                                }
+                            }
                             pid_t child = fork();
                             switch (child) {
                                 case -1:
                                     perror("Failed to fork");
                                     exit(1);
-                                case 0: {
+                                case 0:
                                     /* This is a child process */
-                                    int empty[2];
-                                    run_child(cmds[i], self, empty, empty);
+                                    run_child(cmds[i], pgid, last_pipe[1], pipe_ends[0]);
                                     // Control flow should never return here
                                     assert(0);
-                                    break;
-                                }
                                 default:
                                     /* This is a shell process */
-                                    if (setpgid(child, self) != 0) {
+                                    if (setpgid(child, pgid) != 0) {
                                         perror("Failed to set child process group");    
                                     }
+
+                                    if (cmds[i].cmdflag & OUTPIPE)
+                                        continue;
 
                                     siginfo_t info;
                                     if (waitid(P_PID, child, &info, WEXITED) == -1) {
@@ -304,6 +327,14 @@ int main() {
                                         case 0: continue;
                                         default: exit(1);
                                     }
+                            }
+                            if (last_pipe[1] != -1) {
+                                if (close(last_pipe[1]) == -1) {
+                                    perror("Failed to close prev output pipe");
+                                    fprintf(stderr, "It was %d\n", last_pipe[1]);
+                                    exit(1);
+                                }
+                                last_pipe[1] = -1;
                             }
                         }
                         exit(0);
@@ -383,6 +414,7 @@ int main() {
                     fprintf(stderr, "It was %d\n", last_pipe[0]);
                     exit(1);
                 }
+                last_pipe[0] = -1;
             }
             if (cmds[j].cmdflag & OUTPIPE) {
                 if (pipe(pipe_ends) == -1) {
@@ -443,6 +475,7 @@ int main() {
                     fprintf(stderr, "It was %d\n", last_pipe[1]);
                     exit(1);
                 }
+                last_pipe[1] = -1;
             }
         } /* close for */
     }/* close while */
