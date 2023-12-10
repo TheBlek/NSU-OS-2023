@@ -20,23 +20,6 @@
 struct command cmds[MAXCMDS];
 char bkgrnd;
 
-char *relocate_commands(const char *from, int size, struct command *cmds, int ncmds) {
-    char *to = malloc(size + 1);
-    memcpy(to, from, size);
-    for (int i = 0; i < ncmds; i++) {
-        if (cmds[i].infile) {
-            cmds[i].infile = (cmds[i].infile - from) + to;
-        }
-        if (cmds[i].outfile) {
-            cmds[i].outfile = (cmds[i].outfile - from) + to;
-        }
-        for (int j = 0; cmds[i].cmdargs[j]; j++) {
-            cmds[i].cmdargs[j] = (cmds[i].cmdargs[j] - from) + to;
-        }
-    }
-    return to;
-}
-
 typedef struct {
     pid_t process;
     struct command *cmds;
@@ -49,6 +32,8 @@ static int job_count = 0;
 
 static pid_t shell_pgid;
 static int shell_terminal;
+
+static char line[MAX_LINE_WIDTH];      /*  allow large command lines  */
 
 int wait_for_process(pid_t pid) {
     siginfo_t info;
@@ -85,10 +70,6 @@ void run_child(struct command cmd, pid_t pgid, int prev_pipe, int cur_pipe) {
         fprintf(stderr, "bg: no job control");
         exit(1);
     }
-
-    signal(SIGINT, SIG_DFL);
-    signal(SIGQUIT, SIG_DFL);
-    signal(SIGTTOU, SIG_DFL);
 
     pid_t pid = getpid();
     if (pgid == 0)
@@ -140,6 +121,11 @@ void run_child(struct command cmd, pid_t pgid, int prev_pipe, int cur_pipe) {
             exit(1);
         }
     }
+
+    signal(SIGINT, SIG_DFL);
+    signal(SIGQUIT, SIG_DFL);
+    signal(SIGTTOU, SIG_DFL);
+
     execvp(cmd.cmdargs[0], cmd.cmdargs);
     char message[1024] = "Failed to execute command ";
     perror(strcat(message, cmd.cmdargs[0]));
@@ -153,7 +139,20 @@ int add_job(const char *buffer, int size, struct command *commands, int ncmds) {
     }
     int job_id = job_count;
     jobs[job_id].cmds = commands;
-    jobs[job_id].buffer = relocate_commands(buffer, size, jobs[job_id].cmds, ncmds);
+    jobs[job_id].buffer = malloc(size + 1);
+    char *to = jobs[job_id].buffer;
+    memcpy(to, buffer, size);
+    for (int i = 0; i < ncmds; i++) {
+        if (commands[i].infile) {
+            commands[i].infile = (commands[i].infile - buffer) + to;
+        }
+        if (commands[i].outfile) {
+            commands[i].outfile = (commands[i].outfile - buffer) + to;
+        }
+        for (int j = 0; commands[i].cmdargs[j]; j++) {
+            commands[i].cmdargs[j] = (commands[i].cmdargs[j] - buffer) + to;
+        }
+    }
     job_count++;
     return job_id;
 }
@@ -193,8 +192,122 @@ int get_job_from_argument(int id) {
     return job;
 }
 
+// if pgid is zero commands are non-blocking under this shell
+int process_command_sequence(int ncmds, int interactive, int orig_pgid) {
+    int should_continue = 1;
+    int pipe_ends[2] = {-1, -1};
+    int pgid = orig_pgid;
+    for (int j = 0; j < ncmds && should_continue; j++) {
+        if (interactive && strcmp("fg", cmds[j].cmdargs[0]) == 0) {
+            int job = get_job_from_argument(j);    
+            if (job == -1)
+                should_continue = 0;
+
+            pid_t pid = jobs[job].process;
+            kill(-pid, SIGCONT);
+            switch (wait_for_process(pid)) {
+                case NOT_AN_EXIT_STATUS:
+                    printf("\n[%d] %d Stopped\n", job + 1, pid);
+                    fflush(stdout);
+                    break;
+                default:
+                    remove_job(job);
+            }
+            continue;
+        }
+        if (interactive && strcmp("bg", cmds[j].cmdargs[0]) == 0) {
+            int job = get_job_from_argument(j);    
+            if (job == -1)
+                should_continue = 0;
+
+            kill(-jobs[job].process, SIGCONT);
+            continue;
+        }
+
+        if (!(cmds[j].cmdflag & INPIPE)) {
+            pgid = orig_pgid;
+            pipe_ends[0] = -1;
+            pipe_ends[1] = -1;
+        }
+        
+        int last_pipe[2] = {pipe_ends[0], pipe_ends[1]};
+        if (last_pipe[0] != -1) {
+            if (close(last_pipe[0]) == -1) {
+                perror("Failed to close prev input pipe");
+                fprintf(stderr, "It was %d\n", last_pipe[0]);
+                exit(1);
+            }
+            last_pipe[0] = -1;
+        }
+        if (cmds[j].cmdflag & OUTPIPE) {
+            if (pipe(pipe_ends) == -1) {
+                perror("Failed to open a pipe");
+                exit(1);
+            }
+        }
+
+        pid_t child = fork();
+        switch (child) {
+            case -1:
+                perror("Failed to fork");
+                exit(1);
+            case 0:
+                /* This is a child process */
+                run_child(cmds[j], pgid, last_pipe[1], pipe_ends[0]);
+                // Control flow should never return here
+                assert(0);
+            default:
+                if (!pgid)
+                    pgid = child;
+                /* This is a shell process */
+                if (setpgid(child, pgid) != 0) {
+                    perror("Failed to set child process group");    
+                    exit(1);
+                }
+
+                if (cmds[j].cmdflag & OUTPIPE)
+                    continue;
+
+                if (interactive && tcsetpgrp(shell_terminal, pgid) != 0) {
+                    perror("Failed to set new pg a foreground process group");
+                    exit(1);
+                }
+
+                siginfo_t info;
+                int events = interactive ? WEXITED | WSTOPPED : WEXITED;
+                if (waitid(P_PID, child, &info, events) == -1) {
+                    perror("Failed to wait for child");
+                    exit(1);
+                }
+
+                if (interactive && tcsetpgrp(shell_terminal, shell_pgid) != 0) {
+                    perror("Failed to set shell to foreground");
+                    exit(1);
+                }
+
+                if (info.si_code == CLD_EXITED) {
+                    should_continue = !info.si_status;
+                } else if (info.si_code == CLD_STOPPED) {
+                    should_continue = 0;
+                    int id = add_job(line, sizeof(line), cmds, ncmds);
+                    jobs[id].process = pgid;
+                    printf("\n[%d] %d Stopped\n", id + 1, child);
+                    fflush(stdout);
+                }
+        }
+        if (last_pipe[1] != -1) {
+            if (close(last_pipe[1]) == -1) {
+                perror("Failed to close prev output pipe");
+                fprintf(stderr, "It was %d\n", last_pipe[1]);
+                exit(1);
+            }
+            last_pipe[1] = -1;
+        }
+    } /* close for */
+    return should_continue ? 0 : 1;
+}
+
 int main() {
-    char line[MAX_LINE_WIDTH];      /*  allow large command lines  */
     int ncmds;
     char prompt[50];      /* shell prompt */
 
@@ -274,70 +387,7 @@ int main() {
                             exit(1);
                         }
 
-                        int pipe_ends[2] = {-1, -1};
-                        int pgid = self;
-                        for (int i = 0; i < ncmds; i++) {
-                            if (!(cmds[i].cmdflag & INPIPE)) {
-                                pgid = 0;
-                                pipe_ends[0] = -1;
-                                pipe_ends[1] = -1;
-                            }
-                            
-                            int last_pipe[2] = {pipe_ends[0], pipe_ends[1]};
-                            if (last_pipe[0] != -1) {
-                                if (close(last_pipe[0]) == -1) {
-                                    perror("Failed to close prev input pipe");
-                                    fprintf(stderr, "It was %d\n", last_pipe[0]);
-                                    exit(1);
-                                }
-                                last_pipe[0] = -1;
-                            }
-                            if (cmds[i].cmdflag & OUTPIPE) {
-                                if (pipe(pipe_ends) == -1) {
-                                    perror("Failed to open a pipe");
-                                    exit(1);
-                                }
-                            }
-                            pid_t child = fork();
-                            switch (child) {
-                                case -1:
-                                    perror("Failed to fork");
-                                    exit(1);
-                                case 0:
-                                    /* This is a child process */
-                                    run_child(cmds[i], pgid, last_pipe[1], pipe_ends[0]);
-                                    // Control flow should never return here
-                                    assert(0);
-                                default:
-                                    /* This is a shell process */
-                                    if (setpgid(child, pgid) != 0) {
-                                        perror("Failed to set child process group");    
-                                    }
-
-                                    if (cmds[i].cmdflag & OUTPIPE)
-                                        continue;
-
-                                    siginfo_t info;
-                                    if (waitid(P_PID, child, &info, WEXITED) == -1) {
-                                        perror("Failed to wait for child");
-                                        exit(1);
-                                    }
-
-                                    switch (info.si_status) {
-                                        case 0: continue;
-                                        default: exit(1);
-                                    }
-                            }
-                            if (last_pipe[1] != -1) {
-                                if (close(last_pipe[1]) == -1) {
-                                    perror("Failed to close prev output pipe");
-                                    fprintf(stderr, "It was %d\n", last_pipe[1]);
-                                    exit(1);
-                                }
-                                last_pipe[1] = -1;
-                            }
-                        }
-                        exit(0);
+                        exit(process_command_sequence(ncmds, 0, self));
                     }
                     default:
                         process = another_shell;
@@ -353,8 +403,7 @@ int main() {
                         run_child(cmds[0], child, 0, 0);
                         // Control flow should never return here
                         assert(0);
-                    default:
-                        /* This is a shell process */
+                    default: /* This is a shell process */
                         if (setpgid(child, child) != 0) {
                             perror("Failed to set child process group");    
                             exit(1);
@@ -362,6 +411,8 @@ int main() {
 
                         process = child;
                 }
+                // process_command_sequence(ncmds, 0, 0); ??
+                // Can't for now, need to add (return) a process id :(
             }
 
             int id = add_job(line, sizeof(line), cmds, ncmds);
@@ -371,112 +422,6 @@ int main() {
             continue; // Next prompt
         } /* end bkrnd */
 
-        int should_continue = 1;
-        int pipe_ends[2] = {-1, -1};
-        int pgid = 0;
-        for (int j = 0; j < ncmds && should_continue; j++) {
-            if (strcmp("fg", cmds[j].cmdargs[0]) == 0) {
-                int job = get_job_from_argument(j);    
-                if (job == -1)
-                    should_continue = 0;
-
-                pid_t pid = jobs[job].process;
-                kill(-pid, SIGCONT);
-                switch (wait_for_process(pid)) {
-                    case NOT_AN_EXIT_STATUS:
-                        printf("\n[%d] %d Stopped\n", job + 1, pid);
-                        fflush(stdout);
-                        break;
-                    default:
-                        remove_job(job);
-                }
-                continue;
-            }
-            if (strcmp("bg", cmds[j].cmdargs[0]) == 0) {
-                int job = get_job_from_argument(j);    
-                if (job == -1)
-                    should_continue = 0;
-
-                kill(-jobs[job].process, SIGCONT);
-                continue;
-            }
-
-            if (!(cmds[j].cmdflag & INPIPE)) {
-                pgid = 0;
-                pipe_ends[0] = -1;
-                pipe_ends[1] = -1;
-            }
-            
-            int last_pipe[2] = {pipe_ends[0], pipe_ends[1]};
-            if (last_pipe[0] != -1) {
-                if (close(last_pipe[0]) == -1) {
-                    perror("Failed to close prev input pipe");
-                    fprintf(stderr, "It was %d\n", last_pipe[0]);
-                    exit(1);
-                }
-                last_pipe[0] = -1;
-            }
-            if (cmds[j].cmdflag & OUTPIPE) {
-                if (pipe(pipe_ends) == -1) {
-                    perror("Failed to open a pipe");
-                    exit(1);
-                }
-            }
-
-            pid_t child = fork();
-            switch (child) {
-                case -1:
-                    perror("Failed to fork");
-                    exit(1);
-                case 0:
-                    /* This is a child process */
-                    run_child(cmds[j], pgid, last_pipe[1], pipe_ends[0]);
-                    // Control flow should never return here
-                    assert(0);
-                default:
-                    if (!pgid)
-                        pgid = child;
-                    /* This is a shell process */
-                    if (setpgid(child, pgid) != 0) {
-                        perror("Failed to set child process group");    
-                        exit(1);
-                    }
-
-                    if (tcsetpgrp(shell_terminal, pgid) != 0) {
-                        perror("Failed to set new pg a foreground process group");
-                        exit(1);
-                    }
-                    if (cmds[j].cmdflag & OUTPIPE)
-                        continue;
-
-                    siginfo_t info;
-                    if (waitid(P_PID, child, &info, WEXITED | WSTOPPED) == -1) {
-                        perror("Failed to wait for child");
-                        exit(1);
-                    }
-
-                    if (tcsetpgrp(shell_terminal, shell_pgid) != 0) {
-                        perror("Failed to set shell to foreground");
-                        exit(1);
-                    }
-
-                    if (info.si_code == CLD_EXITED) {
-                        should_continue = !info.si_status;
-                    } else if (info.si_code == CLD_STOPPED) {
-                        int id = add_job(line, sizeof(line), cmds, ncmds);
-                        jobs[id].process = pgid;
-                        printf("\n[%d] %d Stopped\n", id + 1, child);
-                        fflush(stdout);
-                    }
-            }
-            if (last_pipe[1] != -1) {
-                if (close(last_pipe[1]) == -1) {
-                    perror("Failed to close prev output pipe");
-                    fprintf(stderr, "It was %d\n", last_pipe[1]);
-                    exit(1);
-                }
-                last_pipe[1] = -1;
-            }
-        } /* close for */
+        process_command_sequence(ncmds, 1, 0);
     }/* close while */
 }
