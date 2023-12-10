@@ -174,7 +174,6 @@ int get_job_from_argument(int id) {
 
     int job = job_count - 1;
     if (cmds[id].cmdargs[1]) {
-        printf("Parsed\n");
         if (cmds[id].cmdargs[2]) {
             fprintf(stderr, "Invalid number of arguments\n");
             fflush(stderr);
@@ -373,46 +372,30 @@ int main() {
             continue;
 
         if (bkgrnd) {
-            pid_t process;
-            if (ncmds > 1) {
-                pid_t another_shell = fork();
-                switch (another_shell) {
-                    case -1:
-                        perror("Failed to fork shell process");
+            pid_t process = fork();
+            switch (process) {
+                case -1:
+                    perror("Failed to fork shell process");
+                    exit(1);
+                case 0: {
+                    pid_t self = getpid();
+                    if (setpgid(self, self)) {
+                        perror("Failed to set shell's another pgid");
                         exit(1);
-                    case 0: {
-                        pid_t self = getpid();
-                        if (setpgid(self, self)) {
-                            perror("Failed to set shell's another pgid");
-                            exit(1);
-                        }
-
-                        exit(process_command_sequence(ncmds, 0, self));
                     }
-                    default:
-                        process = another_shell;
-                }
-            } else {
-                pid_t child = fork();
-                switch (child) {
-                    case -1:
-                        perror("Failed to fork");
-                        exit(1);
-                    case 0:
-                        /* This is a child process */
-                        run_child(cmds[0], child, 0, 0);
-                        // Control flow should never return here
-                        assert(0);
-                    default: /* This is a shell process */
-                        if (setpgid(child, child) != 0) {
-                            perror("Failed to set child process group");    
-                            exit(1);
-                        }
 
-                        process = child;
+                    if (ncmds > 1) {
+                        exit(process_command_sequence(ncmds, 0, self));
+                    } else {
+                        run_child(cmds[0], self, 0, 0);
+                    }
+                    assert(0);
                 }
-                // process_command_sequence(ncmds, 0, 0); ??
-                // Can't for now, need to add (return) a process id :(
+                default:
+                    if (setpgid(process, process) != 0) {
+                        perror("Failed to set another shell's pgid");
+                        exit(1);
+                    }
             }
 
             int id = add_job(line, sizeof(line), cmds, ncmds);
