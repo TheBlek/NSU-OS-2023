@@ -69,7 +69,7 @@ int parseline(char *line) {
                     return(-1);
                 }
                 if (cmds[ncmds].cmdflag & INPIPE) {
-                    fprintf(stderr, "Cannot redirect input into the middle of a pipeline");
+                    fprintf(stderr, "Cannot redirect input into the middle of a pipeline\n");
                     return -1;
                 }
                 cmds[ncmds].infile = s;
@@ -84,7 +84,7 @@ int parseline(char *line) {
                     return(-1);
                 }
                 if (cmds[ncmds].cmdflag & OUTREDIR) {
-                    fprintf(stderr, "Cannot redirect output from the middle of a pipeline");
+                    fprintf(stderr, "Cannot redirect output from the middle of a pipeline\n");
                     return -1;
                 }
                 cmds[ncmds++].cmdflag |= OUTPIPE;
