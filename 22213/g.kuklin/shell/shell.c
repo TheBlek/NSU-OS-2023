@@ -23,11 +23,14 @@ char bkgrnd;
 typedef struct {
     pid_t process;
     struct command *cmds;
+    int ncmds;
     char *buffer;
 } job_t;
 
-// TODO(theblek): make this a linked list of jobs by encoding next free as a negative number
 static job_t jobs[JOBS_BUFFER_SIZE] = {0};
+// TODO(theblek): make this a linked list of jobs by encoding next free as a negative number
+// This should be possible because wait takes process groups as negative numbers meaning there are no processes with negative ids
+static int job_index[JOBS_BUFFER_SIZE] = {-1};
 static int job_count = 0;
 
 static pid_t shell_pgid;
@@ -132,36 +135,56 @@ void run_child(struct command cmd, pid_t pgid, int prev_pipe, int cur_pipe) {
     exit(1);
 }
 
-int add_job(const char *buffer, int size, struct command *commands, int ncmds) {
+int add_job(const char *buffer, int size, struct command *commands, int ncmds, pid_t process) {
     if (job_count == JOBS_BUFFER_SIZE) {
         printf("Out of job slots");
         return -1;
     }
     int job_id = job_count;
-    jobs[job_id].cmds = commands;
+    jobs[job_id].cmds = malloc(sizeof(struct command) * ncmds);
+    struct command *to_cmds = jobs[job_id].cmds;
+    memcpy(to_cmds, commands, sizeof(struct command) * ncmds);
+    jobs[job_id].ncmds = ncmds;
     jobs[job_id].buffer = malloc(size + 1);
+    jobs[job_id].process = process;
     char *to = jobs[job_id].buffer;
     memcpy(to, buffer, size);
     for (int i = 0; i < ncmds; i++) {
-        if (commands[i].infile) {
-            commands[i].infile = (commands[i].infile - buffer) + to;
+        if (to_cmds[i].infile) {
+            to_cmds[i].infile = (to_cmds[i].infile - buffer) + to;
         }
-        if (commands[i].outfile) {
-            commands[i].outfile = (commands[i].outfile - buffer) + to;
+        if (to_cmds[i].outfile) {
+            to_cmds[i].outfile = (to_cmds[i].outfile - buffer) + to;
         }
-        for (int j = 0; commands[i].cmdargs[j]; j++) {
-            commands[i].cmdargs[j] = (commands[i].cmdargs[j] - buffer) + to;
+        for (int j = 0; to_cmds[i].cmdargs[j]; j++) {
+            to_cmds[i].cmdargs[j] = (to_cmds[i].cmdargs[j] - buffer) + to;
+        }
+    }
+
+    int job_handle = -1;
+    for (int i = 0; i < JOBS_BUFFER_SIZE; i++) {
+        if (job_index[i] == -1) {
+            job_handle = i;
+            job_index[job_handle] = job_id;
+            break;
         }
     }
     job_count++;
-    return job_id;
+    return job_handle;
 }
 
-void remove_job(int id) {
+void remove_job(int handle) {
+    int id = job_index[handle];
     assert(id >= 0);
     assert(id < job_count);
     free(jobs[id].buffer);
+    free(jobs[id].cmds);
     memmove(&jobs[id], &jobs[id+1], sizeof(job_t) * (job_count - id));
+    job_index[handle] = -1;
+    for (int i = 0; i < JOBS_BUFFER_SIZE; i++) {
+        if (job_index[i] > id)
+            job_index[i]--;
+    }
     job_count--;
 }
 
@@ -172,7 +195,7 @@ int get_job_from_argument(int id) {
         return -1;
     }
 
-    int job = job_count - 1;
+    int job = 0;
     if (cmds[id].cmdargs[1]) {
         if (cmds[id].cmdargs[2]) {
             fprintf(stderr, "Invalid number of arguments\n");
@@ -180,12 +203,18 @@ int get_job_from_argument(int id) {
             return -1;
         }
         int arg = atoi(cmds[id].cmdargs[1]);
-        if (arg <= 0 || arg > job_count) {
+        if (arg <= 0 || arg > JOBS_BUFFER_SIZE || job_index[arg - 1] == -1) {
             fprintf(stderr, "Invalid job index\n");
             fflush(stderr);
             return -1;
         }
         job = arg - 1;
+    } else {
+        /* Find job handle that corresponds with last job in stack */
+        /* This should work always and without bounds check, but to be safe */
+        while (job < JOBS_BUFFER_SIZE && job_index[job] != job_count - 1)
+            job++;
+        assert(job_index[job] == job_count - 1);
     }
     fflush(stdout);
     return job;
@@ -198,28 +227,39 @@ int process_command_sequence(int ncmds, int interactive, int orig_pgid) {
     int pgid = orig_pgid;
     for (int j = 0; j < ncmds && should_continue; j++) {
         if (interactive && strcmp("fg", cmds[j].cmdargs[0]) == 0) {
-            int job = get_job_from_argument(j);    
-            if (job == -1)
+            int handle = get_job_from_argument(j);    
+            if (handle == -1) {
                 should_continue = 0;
+                continue;
+            }
 
-            pid_t pid = jobs[job].process;
-            kill(-pid, SIGCONT);
+            job_t job = jobs[job_index[handle]];
+            pid_t pid = job.process;
+            for (int i = 0; i < job.ncmds; i++) {
+                for (int k = 0; job.cmds[i].cmdargs[k]; k++)
+                    printf("%s ", job.cmds[i].cmdargs[k]);
+            }
+            printf("\n");
+
+            kill(-pid, SIGCONT); // Minus is to send signal to the entire process group
             switch (wait_for_process(pid)) {
                 case NOT_AN_EXIT_STATUS:
-                    printf("\n[%d] %d Stopped\n", job + 1, pid);
+                    printf("\n[%d] %d Stopped\n", handle + 1, pid);
                     fflush(stdout);
                     break;
                 default:
-                    remove_job(job);
+                    remove_job(handle);
             }
             continue;
         }
         if (interactive && strcmp("bg", cmds[j].cmdargs[0]) == 0) {
-            int job = get_job_from_argument(j);    
-            if (job == -1)
+            int handle = get_job_from_argument(j);    
+            if (handle == -1) {
                 should_continue = 0;
+                continue;
+            }
 
-            kill(-jobs[job].process, SIGCONT);
+            kill(-jobs[job_index[handle]].process, SIGCONT); // Minus is to send signal to the entire process group
             continue;
         }
 
@@ -233,7 +273,6 @@ int process_command_sequence(int ncmds, int interactive, int orig_pgid) {
         if (last_pipe[0] != -1) {
             if (close(last_pipe[0]) == -1) {
                 perror("Failed to close prev input pipe");
-                fprintf(stderr, "It was %d\n", last_pipe[0]);
                 exit(1);
             }
             last_pipe[0] = -1;
@@ -288,16 +327,14 @@ int process_command_sequence(int ncmds, int interactive, int orig_pgid) {
                     should_continue = !info.si_status;
                 } else if (info.si_code == CLD_STOPPED) {
                     should_continue = 0;
-                    int id = add_job(line, sizeof(line), cmds, ncmds);
-                    jobs[id].process = pgid;
-                    printf("\n[%d] %d Stopped\n", id + 1, child);
+                    int id = add_job(line, sizeof(line), cmds, ncmds, pgid);
+                    printf("\n[%d] %d Stopped\n", id + 1, pgid);
                     fflush(stdout);
                 }
         }
         if (last_pipe[1] != -1) {
             if (close(last_pipe[1]) == -1) {
                 perror("Failed to close prev output pipe");
-                fprintf(stderr, "It was %d\n", last_pipe[1]);
                 exit(1);
             }
             last_pipe[1] = -1;
@@ -330,14 +367,20 @@ int main() {
     sigignore(SIGTTOU);
     sigignore(SIGTTIN);
 
+    for (int i = 0; i < JOBS_BUFFER_SIZE; i++)
+        job_index[i] = -1;
+
     sprintf(prompt,"shell: ");
 
     while (promptline(prompt, line, sizeof(line)) > 0) {    /* until eof  */
         // Check for completed jobs
-        for (int i = 0; i < job_count; i++) {
+        for (int i = 0; i < JOBS_BUFFER_SIZE; i++) {
+            if (job_index[i] == -1) continue;
+            job_t job = jobs[job_index[i]];
+
             siginfo_t info;
-            if (waitid(P_PID, jobs[i].process, &info, WEXITED | WNOHANG) != 0) {
-                fprintf(stderr, "Job %d (process %d) failed\n", i + 1, jobs[i].process);
+            if (waitid(P_PID, job.process, &info, WEXITED | WNOHANG) != 0) {
+                fprintf(stderr, "Job %d (process %d) failed\n", i + 1, job.process);
                 perror("Failed to wait for a job");
                 exit(1);
             }
@@ -393,14 +436,13 @@ int main() {
                 }
                 default:
                     if (setpgid(process, process) != 0) {
-                        perror("Failed to set another shell's pgid");
+                        perror("Failed to set background task's pgid");
                         exit(1);
                     }
             }
 
-            int id = add_job(line, sizeof(line), cmds, ncmds);
-            jobs[id].process = process;
-            printf("[%d] %d\n", id + 1, jobs[id].process);
+            int id = add_job(line, sizeof(line), cmds, ncmds, process);
+            printf("[%d] %d\n", id + 1, process);
             fflush(stdout);
             continue; // Next prompt
         } /* end bkrnd */
