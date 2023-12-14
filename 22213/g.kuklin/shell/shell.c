@@ -143,11 +143,19 @@ int add_job(const char *buffer, int size, struct command *commands, int ncmds, p
     int job_id = job_count;
     jobs[job_id].cmds = malloc(sizeof(struct command) * ncmds);
     struct command *to_cmds = jobs[job_id].cmds;
+    if (to_cmds == NULL) {
+        perror("Failed to allocate memory for commands");
+        exit(1);
+    }
     memcpy(to_cmds, commands, sizeof(struct command) * ncmds);
     jobs[job_id].ncmds = ncmds;
     jobs[job_id].buffer = malloc(size + 1);
     jobs[job_id].process = process;
     char *to = jobs[job_id].buffer;
+    if (to == NULL) {
+        perror("Failed to allocate memory for job buffer");
+        exit(1);
+    }
     memcpy(to, buffer, size);
     for (int i = 0; i < ncmds; i++) {
         if (to_cmds[i].infile) {
