@@ -38,30 +38,27 @@ static int shell_terminal;
 
 static char line[MAX_LINE_WIDTH];      /*  allow large command lines  */
 
+void fail(const char *message) {
+    perror(message);
+    exit(1);
+}
+
 int wait_for_process(pid_t pid) {
     siginfo_t info;
     pid_t pgid = getpgid(pid);
-    if (pgid == -1) {
-        perror("Failed to get pgid of process");
-        exit(1);
-    }
-    if (tcsetpgrp(shell_terminal, pgid) != 0) {
-        perror("Failed to set new pg a foreground process group");
-        exit(1);
-    }
+    if (pgid == -1)
+        fail("Failed to get pgid of process");
 
-    if (waitid(P_PID, pid, &info, WEXITED | WSTOPPED) == -1) {
-        perror("Failed to wait for child");
-        exit(1);
-    }
-    if (tcsetpgrp(shell_terminal, shell_pgid) != 0) {
-        perror("Failed to set shell to foreground");
-        exit(1);
-    }
-    if (info.si_code == CLD_EXITED) {
-        return info.si_status;
-    }
-    return NOT_AN_EXIT_STATUS;
+    if (tcsetpgrp(shell_terminal, pgid) != 0)
+        fail("Failed to set new pg a foreground process group");
+
+    if (waitid(P_PID, pid, &info, WEXITED | WSTOPPED) == -1)
+        fail("Failed to wait for child");
+
+    if (tcsetpgrp(shell_terminal, shell_pgid) != 0)
+        fail("Failed to set shell to foreground");
+
+    return info.si_code == CLD_EXITED ? info.si_status : NOT_AN_EXIT_STATUS;
 }
 
 void run_child(struct command cmd, pid_t pgid, int prev_pipe, int cur_pipe) {
@@ -77,14 +74,12 @@ void run_child(struct command cmd, pid_t pgid, int prev_pipe, int cur_pipe) {
     pid_t pid = getpid();
     if (pgid == 0)
         pgid = pid;
-    if (setpgid(pid, pgid) != 0) {
-        perror("Failed to set child process group. from child");    
-        exit(1);
-    }
-    if (!bkgrnd && tcsetpgrp(shell_terminal, pgid) != 0) {
-        perror("Failed to set new pg a foreground process group. from child");
-        exit(1);
-    }
+    if (setpgid(pid, pgid) != 0)
+        fail("Failed to set child process group. from child");    
+
+    if (!bkgrnd && tcsetpgrp(shell_terminal, pgid) != 0)
+        fail("Failed to set new pg a foreground process group. from child");
+        
     if (cmd.cmdflag & (OUTFILE | OUTFILEAP)) {
         int out;
         if (cmd.cmdflag & OUTFILE)
@@ -92,37 +87,23 @@ void run_child(struct command cmd, pid_t pgid, int prev_pipe, int cur_pipe) {
         else
             out = open(cmd.outfile, O_WRONLY | O_APPEND);
 
-        if (out == -1) {
-            perror("Failed to open file");    
-            exit(1);
-        }
-        if (dup2(out, 1) == -1) {
-            perror("Failed to redirect output to file");
-            exit(1);
-        }
+        if (out == -1)
+            fail("Failed to open file");    
+
+        if (dup2(out, 1) == -1)
+            fail("Failed to redirect output to file");
     }
-    if (cmd.cmdflag & OUTPIPE) {
-        if (dup2(cur_pipe, 1) == -1) {
-            perror("Failed to redirect output to pipe");
-            exit(1);
-        }
-    }
-    if (cmd.cmdflag & INPIPE) {
-        if (dup2(prev_pipe, 0) == -1) {
-            perror("Failed to redirect output to pipe");
-            exit(1);
-        }
-    }
+    if ((cmd.cmdflag & OUTPIPE) && dup2(cur_pipe, 1) == -1)
+        fail("Failed to redirect input from a pipe");
+    if ((cmd.cmdflag & INPIPE) && dup2(prev_pipe, 0) == -1)
+        fail("Failed to redirect output to a pipe");
+
     if (cmd.cmdflag & INFILE) {
         int in = open(cmd.infile, O_RDONLY);
-        if (in == -1) {
-            perror("Failed to open file"); 
-            exit(1);
-        }
-        if (dup2(in, 0) == -1) {
-            perror("Failed to redirect output to file");
-            exit(1);
-        }
+        if (in == -1)
+            fail("Failed to open file"); 
+        if (dup2(in, 0) == -1)
+            fail("Failed to redirect output to file");
     }
 
     signal(SIGINT, SIG_DFL);
@@ -131,8 +112,7 @@ void run_child(struct command cmd, pid_t pgid, int prev_pipe, int cur_pipe) {
 
     execvp(cmd.cmdargs[0], cmd.cmdargs);
     char message[1024] = "Failed to execute command ";
-    perror(strcat(message, cmd.cmdargs[0]));
-    exit(1);
+    fail(strcat(message, cmd.cmdargs[0]));
 }
 
 int add_job(const char *buffer, int size, struct command *commands, int ncmds, pid_t process) {
@@ -143,19 +123,17 @@ int add_job(const char *buffer, int size, struct command *commands, int ncmds, p
     int job_id = job_count;
     jobs[job_id].cmds = malloc(sizeof(struct command) * ncmds);
     struct command *to_cmds = jobs[job_id].cmds;
-    if (to_cmds == NULL) {
-        perror("Failed to allocate memory for commands");
-        exit(1);
-    }
+    if (to_cmds == NULL)
+        fail("Failed to allocate memory for commands");
+
     memcpy(to_cmds, commands, sizeof(struct command) * ncmds);
     jobs[job_id].ncmds = ncmds;
     jobs[job_id].buffer = malloc(size + 1);
     jobs[job_id].process = process;
     char *to = jobs[job_id].buffer;
-    if (to == NULL) {
-        perror("Failed to allocate memory for job buffer");
-        exit(1);
-    }
+    if (to == NULL)
+        fail("Failed to allocate memory for job buffer");
+
     memcpy(to, buffer, size);
     for (int i = 0; i < ncmds; i++) {
         if (to_cmds[i].infile) {
@@ -279,24 +257,18 @@ int process_command_sequence(int ncmds, int interactive, int orig_pgid) {
         
         int last_pipe[2] = {pipe_ends[0], pipe_ends[1]};
         if (last_pipe[0] != -1) {
-            if (close(last_pipe[0]) == -1) {
-                perror("Failed to close prev input pipe");
-                exit(1);
-            }
+            if (close(last_pipe[0]) == -1)
+                fail("Failed to close prev input pipe");
             last_pipe[0] = -1;
         }
         if (cmds[j].cmdflag & OUTPIPE) {
-            if (pipe(pipe_ends) == -1) {
-                perror("Failed to open a pipe");
-                exit(1);
-            }
+            if (pipe(pipe_ends) == -1)
+                fail("Failed to open a pipe");
         }
 
         pid_t child = fork();
         switch (child) {
-            case -1:
-                perror("Failed to fork");
-                exit(1);
+            case -1: fail("Failed to fork"); break; // Fall-through warning elision
             case 0:
                 /* This is a child process */
                 run_child(cmds[j], pgid, last_pipe[1], pipe_ends[0]);
@@ -306,30 +278,22 @@ int process_command_sequence(int ncmds, int interactive, int orig_pgid) {
                 if (!pgid)
                     pgid = child;
                 /* This is a shell process */
-                if (setpgid(child, pgid) != 0) {
-                    perror("Failed to set child process group");    
-                    exit(1);
-                }
+                if (setpgid(child, pgid) != 0)
+                    fail("Failed to set child process group");    
 
                 if (cmds[j].cmdflag & OUTPIPE)
                     continue;
 
-                if (interactive && tcsetpgrp(shell_terminal, pgid) != 0) {
-                    perror("Failed to set new pg a foreground process group");
-                    exit(1);
-                }
+                if (interactive && tcsetpgrp(shell_terminal, pgid) != 0)
+                    fail("Failed to set new pg a foreground process group");
 
                 siginfo_t info;
                 int events = interactive ? WEXITED | WSTOPPED : WEXITED;
-                if (waitid(P_PID, child, &info, events) == -1) {
-                    perror("Failed to wait for child");
-                    exit(1);
-                }
+                if (waitid(P_PID, child, &info, events) == -1)
+                    fail("Failed to wait for child");
 
-                if (interactive && tcsetpgrp(shell_terminal, shell_pgid) != 0) {
-                    perror("Failed to set shell to foreground");
-                    exit(1);
-                }
+                if (interactive && tcsetpgrp(shell_terminal, shell_pgid) != 0)
+                    fail("Failed to set shell to foreground");
 
                 if (info.si_code == CLD_EXITED) {
                     should_continue = !info.si_status;
@@ -341,10 +305,8 @@ int process_command_sequence(int ncmds, int interactive, int orig_pgid) {
                 }
         }
         if (last_pipe[1] != -1) {
-            if (close(last_pipe[1]) == -1) {
-                perror("Failed to close prev output pipe");
-                exit(1);
-            }
+            if (close(last_pipe[1]) == -1)
+                fail("Failed to close prev output pipe");
             last_pipe[1] = -1;
         }
     } /* close for */
@@ -360,15 +322,11 @@ int main() {
     assert(isatty(shell_terminal));
 
     if (shell_pgid != getpgid(shell_pgid)) {
-        if (setpgid(shell_pgid, shell_pgid) != 0) {
-            perror("Couldn't put shell into it's own process group");
-            exit(1);
-        }
+        if (setpgid(shell_pgid, shell_pgid) != 0)
+            fail("Couldn't put shell into it's own process group");
     }
-    if (tcsetpgrp(shell_terminal, shell_pgid) != 0) {
-        perror("Failed to take control over terminal");
-        exit(1);
-    }
+    if (tcsetpgrp(shell_terminal, shell_pgid) != 0)
+        fail("Failed to take control over terminal");
 
     sigignore(SIGINT);
     sigignore(SIGQUIT);
@@ -389,8 +347,7 @@ int main() {
             siginfo_t info;
             if (waitid(P_PID, job.process, &info, WEXITED | WNOHANG) != 0) {
                 fprintf(stderr, "Job %d (process %d) failed\n", i + 1, job.process);
-                perror("Failed to wait for a job");
-                exit(1);
+                fail("Failed to wait for a job");
             }
 
             if (info.si_code == CLD_EXITED) {
@@ -425,15 +382,11 @@ int main() {
         if (bkgrnd) {
             pid_t process = fork();
             switch (process) {
-                case -1:
-                    perror("Failed to fork shell process");
-                    exit(1);
+                case -1: fail("Failed to fork shell process"); break; // Fall-through warning elision
                 case 0: {
                     pid_t self = getpid();
-                    if (setpgid(self, self)) {
-                        perror("Failed to set shell's another pgid");
-                        exit(1);
-                    }
+                    if (setpgid(self, self))
+                        fail("Failed to set shell's another pgid");
 
                     if (ncmds > 1) {
                         exit(process_command_sequence(ncmds, 0, self));
@@ -443,10 +396,8 @@ int main() {
                     assert(0);
                 }
                 default:
-                    if (setpgid(process, process) != 0) {
-                        perror("Failed to set background task's pgid");
-                        exit(1);
-                    }
+                    if (setpgid(process, process) != 0)
+                        fail("Failed to set background task's pgid");
             }
 
             int id = add_job(line, sizeof(line), cmds, ncmds, process);
