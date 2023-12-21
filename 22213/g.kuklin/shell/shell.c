@@ -302,6 +302,8 @@ int process_command_sequence(int ncmds, int interactive, int orig_pgid) {
                     int id = add_job(line, sizeof(line), cmds, ncmds, pgid);
                     printf("\n[%d] %d Stopped\n", id + 1, pgid);
                     fflush(stdout);
+                } else if (info.si_code == CLD_KILLED || info.si_code == CLD_DUMPED) {
+                    should_continue = 0;
                 }
         }
         if (last_pipe[1] != -1) {
