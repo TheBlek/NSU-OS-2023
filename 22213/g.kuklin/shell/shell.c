@@ -201,6 +201,7 @@ int process_command_sequence(struct command_sequence sqnc, int interactive, int 
     int pipe_ends[2] = {-1, -1};
     int pgid = orig_pgid;
     for (int j = 0; j < sqnc.cnt && should_continue; j++) {
+        // Check for internal commands like fg, bg (could be other)
         if (interactive && strcmp("fg", sqnc.cmds[j].cmdargs[0]) == 0) {
             int handle = get_job_from_argument(sqnc.cmds[j]);    
             if (handle == -1) {
@@ -330,6 +331,7 @@ int main() {
     sigignore(SIGQUIT);
     sigignore(SIGTTOU);
     sigignore(SIGTTIN);
+    sigignore(SIGTSTP);
 
     for (int i = 0; i < JOBS_BUFFER_SIZE; i++)
         job_index[i] = -1;
