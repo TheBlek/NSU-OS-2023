@@ -7,6 +7,12 @@ struct command {
     char *infile, *outfile;
 };
 
+struct command_sequence {
+    struct command *cmds;
+    int cnt;
+    char background;
+};
+
 /*  cmdflag's  */
 #define OUTPIPE    0x01
 #define OUTFILE    0x02
@@ -16,9 +22,7 @@ struct command {
 
 #define OUTREDIR   0x07
 
-extern struct command cmds[];
-extern char *infile, *outfile, *appfile;
-extern char bkgrnd;
+extern struct command_sequence cmds[];
 
-int parseline(char *);
+int parseline(char *, struct command_sequence *);
 int promptline(char *, char *, int);
