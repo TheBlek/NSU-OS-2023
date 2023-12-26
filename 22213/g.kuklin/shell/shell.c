@@ -170,7 +170,6 @@ void remove_job(int handle) {
 int get_job_from_argument(struct command cmd) {
     if (job_count == 0) {
         fprintf(stderr, "No jobs to manipulate\n");
-        fflush(stderr);
         return -1;
     }
 
@@ -178,13 +177,11 @@ int get_job_from_argument(struct command cmd) {
     if (cmd.cmdargs[1]) {
         if (cmd.cmdargs[2]) {
             fprintf(stderr, "Invalid number of arguments\n");
-            fflush(stderr);
             return -1;
         }
         int arg = atoi(cmd.cmdargs[1]);
         if (arg <= 0 || arg > JOBS_BUFFER_SIZE || job_index[arg - 1] == -1) {
             fprintf(stderr, "Invalid job index\n");
-            fflush(stderr);
             return -1;
         }
         job = arg - 1;
@@ -195,7 +192,6 @@ int get_job_from_argument(struct command cmd) {
             job++;
         assert(job_index[job] == job_count - 1);
     }
-    fflush(stdout);
     return job;
 }
 
@@ -209,6 +205,7 @@ int process_command_sequence(struct command_sequence sqnc, int interactive, int 
             int handle = get_job_from_argument(sqnc.cmds[j]);    
             if (handle == -1) {
                 should_continue = 0;
+                fflush(stderr); // Force error on screen
                 continue;
             }
 
