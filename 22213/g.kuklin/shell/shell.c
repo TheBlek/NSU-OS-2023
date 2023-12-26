@@ -85,7 +85,7 @@ void run_child(struct command cmd, pid_t pgid, int prev_pipe, int cur_pipe, char
             out = open(cmd.outfile, O_WRONLY | O_APPEND);
 
         if (out == -1)
-            fail("Failed to open file");    
+            fail("Failed to open output file");    
 
         if (dup2(out, 1) == -1)
             fail("Failed to redirect output to file");
@@ -114,34 +114,30 @@ void run_child(struct command cmd, pid_t pgid, int prev_pipe, int cur_pipe, char
 
 int add_job(const char *buffer, int size, struct command *commands, int ncmds, pid_t process) {
     if (job_count == JOBS_BUFFER_SIZE) {
-        printf("Out of job slots");
+        fprintf(stderr, "Out of job slots");
         return -1;
     }
     int job_id = job_count;
+    jobs[job_id].ncmds = ncmds;
+    jobs[job_id].process = process;
+    jobs[job_id].buffer = malloc(size + 1);
+    char *to = jobs[job_id].buffer;
+    if (to == NULL)
+        fail("Failed to allocate memory for job buffer");
     jobs[job_id].cmds = malloc(sizeof(struct command) * ncmds);
     struct command *to_cmds = jobs[job_id].cmds;
     if (to_cmds == NULL)
         fail("Failed to allocate memory for commands");
 
     memcpy(to_cmds, commands, sizeof(struct command) * ncmds);
-    jobs[job_id].ncmds = ncmds;
-    jobs[job_id].buffer = malloc(size + 1);
-    jobs[job_id].process = process;
-    char *to = jobs[job_id].buffer;
-    if (to == NULL)
-        fail("Failed to allocate memory for job buffer");
-
     memcpy(to, buffer, size);
     for (int i = 0; i < ncmds; i++) {
-        if (to_cmds[i].infile) {
+        if (to_cmds[i].infile)
             to_cmds[i].infile = (to_cmds[i].infile - buffer) + to;
-        }
-        if (to_cmds[i].outfile) {
+        if (to_cmds[i].outfile)
             to_cmds[i].outfile = (to_cmds[i].outfile - buffer) + to;
-        }
-        for (int j = 0; to_cmds[i].cmdargs[j]; j++) {
+        for (int j = 0; to_cmds[i].cmdargs[j]; j++)
             to_cmds[i].cmdargs[j] = (to_cmds[i].cmdargs[j] - buffer) + to;
-        }
     }
 
     int job_handle = -1;
@@ -158,8 +154,8 @@ int add_job(const char *buffer, int size, struct command *commands, int ncmds, p
 
 void remove_job(int handle) {
     int id = job_index[handle];
-    assert(id >= 0);
-    assert(id < job_count);
+    assert(id >= 0 && "Negative job id");
+    assert(id < job_count && "Out of bounds job id");
     free(jobs[id].buffer);
     free(jobs[id].cmds);
     memmove(&jobs[id], &jobs[id+1], sizeof(job_t) * (job_count - id));
@@ -315,9 +311,12 @@ int process_command_sequence(struct command_sequence sqnc, int interactive, int 
 int main() {
     int nsqnc;
     char prompt[50];      /* shell prompt */
-    struct command_sequence sqncs[MAXCMDS];
-    for (int i = 0; i < MAXCMDS; i++)
+    struct command_sequence sqncs[MAXSQNCS];
+    for (int i = 0; i < MAXSQNCS; i++) {
         sqncs[i].cmds = malloc(sizeof(struct command) * MAXCMDS); 
+        if (!sqncs[i].cmds)
+            fail("Failed to allocate memory for commands"); 
+    }
 
     shell_pgid = getpid();
     shell_terminal = STDIN_FILENO;
@@ -413,7 +412,7 @@ int main() {
             process_command_sequence(sqncs[i], 1, 0);
         } // close for
     } // close while
-    for (int i = 0; i < MAXCMDS; i++)
+    for (int i = 0; i < MAXSQNCS; i++)
        free(sqncs[i].cmds);
     return 0;
 }

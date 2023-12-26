@@ -8,14 +8,23 @@
 int promptline(char *prompt, char *line, int sizline) {
     int n = 0;
 
-    write(1, prompt, strlen(prompt));
+    int written = 0;
+    int target = strlen(prompt);
+    do {
+        int res = write(1, prompt, target - written);
+        if (res == -1) {
+            perror("Failed to write next prompt");
+            exit(1);
+        }
+        written += res;
+    } while (written < target);
     while (1) {
         int more = read(0, (line + n), sizline-n);
         if (more == -1) {
             perror("Failed to read next prompt");
             exit(1);
         }
-        if (more == 0) return -1;
+        if (more == 0) return -1; // EOF
 
         n += more;
         *(line+n) = '\0';

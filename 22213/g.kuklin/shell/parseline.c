@@ -7,15 +7,14 @@ static char *blankskip(register char *);
 int parseline(char *line, struct command_sequence *sqncs) {
     int nargs, ncmds, nsqnc;
     register char *s;
-    int rval;
     register int i;
     static char delim[] = " \t|&<>;\n\0";
 
     /* initialize  */
-    nargs = ncmds = nsqnc = rval = 0;
+    nargs = ncmds = nsqnc = 0;
     s = line;
     sqncs[nsqnc].cmds[0].cmdargs[0] = (char *) NULL;
-    for (i = 0; i < MAXCMDS; i++) {
+    for (i = 0; i < MAXSQNCS; i++) {
         for (int j = 0; j < MAXCMDS; j++)
             sqncs[i].cmds[j].cmdflag = 0;
         sqncs[i].cnt = 0;
@@ -30,9 +29,13 @@ int parseline(char *line, struct command_sequence *sqncs) {
         switch(*s) {
             case '&':
                 if (*(s+1) == '&') {
-                    ++ncmds; // Start reading new command
+                    ncmds++; // Start reading new command
                     nargs = 0;
                     *s++ = '\0';
+                    if (ncmds >= MAXCMDS) {
+                        fprintf(stderr, "Too many commands in one sequence\n");
+                        return -1;
+                    }
                 } else {
                     if (nargs == 0) { // Should have read some commands by now
                         fprintf(stderr, "Unexpected \"&\"\n");
@@ -43,6 +46,10 @@ int parseline(char *line, struct command_sequence *sqncs) {
                     nsqnc++;
                     ncmds = 0;
                     nargs = 0;
+                    if (nsqnc >= MAXSQNCS) {
+                        fprintf(stderr, "Too many command sequences in one prompt\n");
+                        return -1;
+                    }
                 }
                 *s++ = '\0';
                 break;
@@ -59,7 +66,7 @@ int parseline(char *line, struct command_sequence *sqncs) {
                 s = blankskip(s);
                 if (!*s) {
                     fprintf(stderr, "Expected filename after output redirection\n");
-                    return(-1);
+                    return -1;
                 }
 
                 sqncs[nsqnc].cmds[ncmds].outfile = s;
@@ -72,7 +79,7 @@ int parseline(char *line, struct command_sequence *sqncs) {
                 s = blankskip(s);
                 if (!*s) {
                     fprintf(stderr, "Expected filename after input redirection\n");
-                    return(-1);
+                    return -1;
                 }
                 if (sqncs[nsqnc].cmds[ncmds].cmdflag & INPIPE) {
                     fprintf(stderr, "Cannot redirect input into the middle of a pipeline\n");
@@ -87,7 +94,7 @@ int parseline(char *line, struct command_sequence *sqncs) {
             case '|':
                 if (nargs == 0) {
                     fprintf(stderr, "No command to the left of the pipe symbol\n");
-                    return(-1);
+                    return -1;
                 }
                 if (sqncs[nsqnc].cmds[ncmds].cmdflag & OUTREDIR) {
                     fprintf(stderr, "Cannot redirect output from the middle of a pipeline\n");
@@ -104,21 +111,22 @@ int parseline(char *line, struct command_sequence *sqncs) {
                 nsqnc++; // Start reading into a new command sequence
                 ncmds = 0;
                 nargs = 0;
+                if (nsqnc >= MAXSQNCS) {
+                    fprintf(stderr, "Too many command sequences\n");
+                    return -1;
+                }
                 break;
             default:
                 /*  a command argument  */
-                if (nargs == 0) {
-                    rval = ncmds+1; // If this is the first argument - it is a new command
-                    if (sqncs[nsqnc].background > 0) {
-                        fprintf(stderr, "\"&\" is only allowed after the last command in the line\n");
-                        return -1;
-                    }
+                if (nargs == 0 && sqncs[nsqnc].background > 0) {
+                    fprintf(stderr, "\"&\" is only allowed after the last command in the line\n");
+                    return -1;
                 }
 
                 sqncs[nsqnc].cmds[ncmds].cmdargs[nargs++] = s;
                 sqncs[nsqnc].cmds[ncmds].cmdargs[nargs] = (char *) NULL;
                 char *s1 = strpbrk(s, delim);
-                if (!s1) {
+                if (!s1) { // If no delimeter found, null until the end
                     s1 = s;
                     while (*s1 != '\0')
                         s1++;
@@ -137,14 +145,12 @@ int parseline(char *line, struct command_sequence *sqncs) {
      *  no command on the right side of a pipe
      *  no command to the left of a pipe is checked above
      */
-    if (sqncs[nsqnc].cmds[ncmds].cmdflag & OUTPIPE) {
-        if (nargs == 0) {
-            fprintf(stderr, "Outgoing pipe on the last command\n");
-            return(-1);
-        }
+    if (sqncs[nsqnc].cmds[ncmds].cmdflag & OUTPIPE && nargs == 0) {
+        fprintf(stderr, "Outgoing pipe on the last command\n");
+        return(-1);
     }
     sqncs[nsqnc].cnt = ncmds + 1;
-    if (nargs == 0)
+    if (nargs == 0) // Current command is empty, should not be counted
         nsqnc--;
     return nsqnc + 1;
 }
