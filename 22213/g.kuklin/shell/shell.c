@@ -19,6 +19,7 @@
 
 typedef struct {
     pid_t process;
+    int process_cnt;
     struct command *cmds;
     int ncmds;
     char *buffer;
@@ -38,24 +39,6 @@ static char line[MAX_LINE_WIDTH];      /*  allow large command lines  */
 void fail(const char *message) {
     perror(message);
     exit(1);
-}
-
-int wait_for_process(pid_t pid) {
-    siginfo_t info;
-    pid_t pgid = getpgid(pid);
-    if (pgid == -1)
-        fail("Failed to get pgid of process");
-
-    if (tcsetpgrp(shell_terminal, pgid) != 0)
-        fail("Failed to set new pg a foreground process group");
-
-    if (waitid(P_PID, pid, &info, WEXITED | WSTOPPED) == -1)
-        fail("Failed to wait for child");
-
-    if (tcsetpgrp(shell_terminal, shell_pgid) != 0)
-        fail("Failed to set shell to foreground");
-
-    return info.si_code == CLD_EXITED ? info.si_status : NOT_AN_EXIT_STATUS;
 }
 
 void run_child(struct command cmd, pid_t pgid, int prev_pipe, int cur_pipe, char bkgrnd) {
@@ -100,19 +83,20 @@ void run_child(struct command cmd, pid_t pgid, int prev_pipe, int cur_pipe, char
         if (in == -1)
             fail("Failed to open file"); 
         if (dup2(in, 0) == -1)
-            fail("Failed to redirect output to file");
+            fail("Failed to redirect input from file");
     }
 
     signal(SIGINT, SIG_DFL);
     signal(SIGQUIT, SIG_DFL);
     signal(SIGTTOU, SIG_DFL);
+    signal(SIGTSTP, SIG_DFL);
 
     execvp(cmd.cmdargs[0], cmd.cmdargs);
     char message[1024] = "Failed to execute command ";
     fail(strcat(message, cmd.cmdargs[0]));
 }
 
-int add_job(const char *buffer, int size, struct command *commands, int ncmds, pid_t process) {
+int add_job(const char *buffer, int size, struct command *commands, int ncmds, pid_t process, int process_cnt) {
     if (job_count == JOBS_BUFFER_SIZE) {
         fprintf(stderr, "Out of job slots");
         return -1;
@@ -120,6 +104,7 @@ int add_job(const char *buffer, int size, struct command *commands, int ncmds, p
     int job_id = job_count;
     jobs[job_id].ncmds = ncmds;
     jobs[job_id].process = process;
+    jobs[job_id].process_cnt = process_cnt;
     jobs[job_id].buffer = malloc(size + 1);
     char *to = jobs[job_id].buffer;
     if (to == NULL)
@@ -175,10 +160,6 @@ int get_job_from_argument(struct command cmd) {
 
     int job = 0;
     if (cmd.cmdargs[1]) {
-        if (cmd.cmdargs[2]) {
-            fprintf(stderr, "Invalid number of arguments\n");
-            return -1;
-        }
         int arg = atoi(cmd.cmdargs[1]);
         if (arg <= 0 || arg > JOBS_BUFFER_SIZE || job_index[arg - 1] == -1) {
             fprintf(stderr, "Invalid job index\n");
@@ -199,6 +180,7 @@ int get_job_from_argument(struct command cmd) {
 int process_command_sequence(struct command_sequence sqnc, int interactive, int orig_pgid) {
     int should_continue = 1;
     int pipe_ends[2] = {-1, -1};
+    int pipe_size = 0;
     int pgid = orig_pgid;
     for (int j = 0; j < sqnc.cnt && should_continue; j++) {
         // Check for internal commands like fg, bg (could be other)
@@ -215,12 +197,28 @@ int process_command_sequence(struct command_sequence sqnc, int interactive, int 
             for (int i = 0; i < job.ncmds; i++) {
                 for (int k = 0; job.cmds[i].cmdargs[k]; k++)
                     printf("%s ", job.cmds[i].cmdargs[k]);
+
+                if (i + 1 == job.ncmds) continue;
+                if (job.cmds[i].cmdflag & OUTPIPE)
+                    printf("| ");
+                else
+                    printf("&& ");
             }
             printf("\n");
 
             kill(-pid, SIGCONT); // Minus is to send signal to the entire process group
-            switch (wait_for_process(pid)) {
-                case NOT_AN_EXIT_STATUS:
+
+            if (tcsetpgrp(shell_terminal, pid) != 0)
+                fail("Failed to set new pg a foreground process group");
+
+            siginfo_t info;
+            if (waitid(P_PID, pid, &info, WEXITED | WSTOPPED) == -1)
+                fail("Failed to wait for child");
+
+            if (tcsetpgrp(shell_terminal, shell_pgid) != 0)
+                fail("Failed to set shell to foreground");
+            switch (info.si_code) {
+                case CLD_STOPPED:
                     printf("\n[%d] %d Stopped\n", handle + 1, pid);
                     fflush(stdout);
                     break;
@@ -236,6 +234,7 @@ int process_command_sequence(struct command_sequence sqnc, int interactive, int 
                 continue;
             }
 
+            // TODO: send only when its not in background
             kill(-jobs[job_index[handle]].process, SIGCONT); // Minus is to send signal to the entire process group
             continue;
         }
@@ -256,6 +255,11 @@ int process_command_sequence(struct command_sequence sqnc, int interactive, int 
             if (pipe(pipe_ends) == -1)
                 fail("Failed to open a pipe");
         }
+
+        if (sqnc.cmds[j].cmdflag & (OUTPIPE | INPIPE))
+            pipe_size++;
+        else
+            pipe_size = 1;
 
         pid_t child = fork();
         switch (child) {
@@ -280,8 +284,11 @@ int process_command_sequence(struct command_sequence sqnc, int interactive, int 
 
                 siginfo_t info;
                 int events = interactive ? WEXITED | WSTOPPED : WEXITED;
-                if (waitid(P_PID, child, &info, events) == -1)
-                    fail("Failed to wait for child");
+                for (int k = 0; k < pipe_size; k++) {
+                    if (waitid(P_PGID, pgid, &info, events) == -1)
+                        fail("Failed to wait for child");
+                    if (info.si_code == CLD_STOPPED) break;
+                }
 
                 if (interactive && tcsetpgrp(shell_terminal, shell_pgid) != 0)
                     fail("Failed to set shell to foreground");
@@ -290,7 +297,7 @@ int process_command_sequence(struct command_sequence sqnc, int interactive, int 
                     should_continue = !info.si_status;
                 } else if (info.si_code == CLD_STOPPED) {
                     should_continue = 0;
-                    int id = add_job(line, sizeof(line), &sqnc.cmds[j], 1, pgid);
+                    int id = add_job(line, sizeof(line), &sqnc.cmds[j - pipe_size + 1], pipe_size, pgid, pipe_size);
                     printf("\n[%d] %d Stopped\n", id + 1, pgid);
                     fflush(stdout);
                 } else if (info.si_code == CLD_KILLED || info.si_code == CLD_DUMPED) {
@@ -345,12 +352,22 @@ int main() {
             job_t job = jobs[job_index[i]];
 
             siginfo_t info;
-            if (waitid(P_PID, job.process, &info, WEXITED | WNOHANG) != 0) {
+            idtype_t type = P_PGID;
+            if (job.process_cnt == -1) { // -1 marks that we need to wait for specific process rather than the whole group
+                type = P_PID;
+            }
+            if (waitid(type, job.process, &info, WEXITED | WNOHANG) != 0) {
                 fprintf(stderr, "Job %d (process %d) failed\n", i + 1, job.process);
                 fail("Failed to wait for a job");
             }
 
-            if (info.si_code == CLD_EXITED) {
+            if (info.si_code == CLD_EXITED || info.si_code == CLD_KILLED || info.si_code == CLD_DUMPED) {
+                if (job.process_cnt > 0)
+                    jobs[job_index[i]].process_cnt--;
+                else
+                    jobs[job_index[i]].process_cnt = 0;
+            }
+            if (jobs[job_index[i]].process_cnt == 0) {
                 printf("[%d] %d Finished. Exit code: %d\n", i+1, info.si_pid, info.si_status);
                 remove_job(i);
             }
@@ -390,11 +407,10 @@ int main() {
                         if (setpgid(self, self))
                             fail("Failed to set shell's another pgid");
 
-                        if (sqncs[i].cnt > 1) {
+                        if (sqncs[i].cnt > 1)
                             exit(process_command_sequence(sqncs[i], 0, self));
-                        } else {
+                        else
                             run_child(sqncs[i].cmds[0], self, 0, 0, 1);
-                        }
                         assert(0);
                     }
                     default:
@@ -402,7 +418,7 @@ int main() {
                             fail("Failed to set background task's pgid");
                 }
 
-                int id = add_job(line, sizeof(line), sqncs[i].cmds, sqncs[i].cnt, process);
+                int id = add_job(line, sizeof(line), sqncs[i].cmds, sqncs[i].cnt, process, -1);
                 printf("[%d] %d\n", id + 1, process);
                 fflush(stdout);
                 continue; // Next prompt
