@@ -212,8 +212,17 @@ int process_command_sequence(struct command_sequence sqnc, int interactive, int 
                 fail("Failed to set new pg a foreground process group");
 
             siginfo_t info;
-            if (waitid(P_PID, pid, &info, WEXITED | WSTOPPED) == -1)
-                fail("Failed to wait for child");
+            if (job.process_cnt < 0) {
+                if (waitid(P_PID, pid, &info, WEXITED | WSTOPPED) == -1)
+                    fail("Failed to wait for child");
+            } else {
+                for (int i = 0; i < job.process_cnt; i++) {
+                    if (waitid(P_PGID, pid, &info, WEXITED | WSTOPPED) == -1)
+                        fail("Failed to wait for child");
+                    if (info.si_code == CLD_STOPPED) break;
+                    jobs[job_index[handle]].process_cnt--;
+                }
+            }
 
             if (tcsetpgrp(shell_terminal, shell_pgid) != 0)
                 fail("Failed to set shell to foreground");
@@ -284,7 +293,8 @@ int process_command_sequence(struct command_sequence sqnc, int interactive, int 
 
                 siginfo_t info;
                 int events = interactive ? WEXITED | WSTOPPED : WEXITED;
-                for (int k = 0; k < pipe_size; k++) {
+                int finished = 0;
+                for (; finished < pipe_size; finished++) {
                     if (waitid(P_PGID, pgid, &info, events) == -1)
                         fail("Failed to wait for child");
                     if (info.si_code == CLD_STOPPED) break;
@@ -297,7 +307,7 @@ int process_command_sequence(struct command_sequence sqnc, int interactive, int 
                     should_continue = !info.si_status;
                 } else if (info.si_code == CLD_STOPPED) {
                     should_continue = 0;
-                    int id = add_job(line, sizeof(line), &sqnc.cmds[j - pipe_size + 1], pipe_size, pgid, pipe_size);
+                    int id = add_job(line, sizeof(line), &sqnc.cmds[j - pipe_size + 1], pipe_size, pgid, pipe_size - finished);
                     printf("\n[%d] %d Stopped\n", id + 1, pgid);
                     fflush(stdout);
                 } else if (info.si_code == CLD_KILLED || info.si_code == CLD_DUMPED) {
