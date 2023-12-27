@@ -116,6 +116,18 @@ int parseline(char *line, struct command_sequence *sqncs) {
                     return -1;
                 }
                 break;
+            case '"':
+                sqncs[nsqnc].cmds[ncmds].cmdargs[nargs++] = s + 1;
+                sqncs[nsqnc].cmds[ncmds].cmdargs[nargs] = (char *) NULL;
+                do {
+                    s++;
+                } while (*s && *s != '"');
+                if (!*s) {
+                    fprintf(stderr, "Unmatched quotation mark\n");
+                    return -1;
+                }
+                *s++ = '\0';
+                break;
             default:
                 /*  a command argument  */
                 if (nargs == 0 && sqncs[nsqnc].background > 0) {

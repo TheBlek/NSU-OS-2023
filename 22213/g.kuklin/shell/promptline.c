@@ -18,6 +18,7 @@ int promptline(char *prompt, char *line, int sizline) {
         }
         written += res;
     } while (written < target);
+    int stray_quote = 0;
     while (1) {
         int more = read(0, (line + n), sizline-n);
         if (more == -1) {
@@ -26,6 +27,8 @@ int promptline(char *prompt, char *line, int sizline) {
         }
         if (more == 0) return -1; // EOF
 
+        for (int i = n; i < more + n; i++)
+            stray_quote = (stray_quote + (*(line + i) == '"')) % 2;
         n += more;
         *(line+n) = '\0';
 
@@ -41,7 +44,7 @@ int promptline(char *prompt, char *line, int sizline) {
         }
 
         /* Command is not finished yet */
-        if (*(line+n-1) != '\n') {
+        if (*(line+n-1) != '\n' || stray_quote) {
             continue; 
         }
         return(n);      /* all done */
