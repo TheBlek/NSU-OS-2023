@@ -280,8 +280,11 @@ int process_command_sequence(struct command_sequence sqnc, int interactive, int 
             continue;
         }
 
-        if (!(sqnc.cmds[j].cmdflag & INPIPE)) {
+        if (sqnc.cmds[j].cmdflag & INPIPE) {
+            pipe_size++;
+        } else {
             pgid = orig_pgid;
+            pipe_size = 1;
             pipe_ends[0] = -1;
             pipe_ends[1] = -1;
         }
@@ -296,11 +299,6 @@ int process_command_sequence(struct command_sequence sqnc, int interactive, int 
             if (pipe(pipe_ends) == -1)
                 fail("Failed to open a pipe");
         }
-
-        if (sqnc.cmds[j].cmdflag & (OUTPIPE | INPIPE))
-            pipe_size++;
-        else
-            pipe_size = 1;
 
         pid_t child = fork();
         switch (child) {
