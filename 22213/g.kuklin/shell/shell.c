@@ -22,6 +22,7 @@ typedef struct {
     int process_cnt;
     struct command *cmds;
     int ncmds;
+    char stopped;
     char *buffer;
 } job_t;
 
@@ -152,7 +153,7 @@ void remove_job(int handle) {
     job_count--;
 }
 
-int get_job_from_argument(struct command cmd) {
+int get_job_from_argument(struct command cmd, char stopped) {
     if (job_count == 0) {
         fprintf(stderr, "No jobs to manipulate\n");
         return -1;
@@ -167,11 +168,22 @@ int get_job_from_argument(struct command cmd) {
         }
         job = arg - 1;
     } else {
-        /* Find job handle that corresponds with last job in stack */
+        int target = job_count - 1;
+        // If we need a stopped job (for bg), find latest one
+        if (stopped) {
+            while (target >= 0 && jobs[target].stopped == 0)
+                target--;
+            if (target < 0) {
+                fprintf(stderr, "No jobs to manipulate\n");
+                return -1;
+            }
+        }
+
+        /* Find job handle that corresponds with target job in stack */
         /* This should work always and without bounds check, but to be safe */
-        while (job < JOBS_BUFFER_SIZE && job_index[job] != job_count - 1)
+        while (job < JOBS_BUFFER_SIZE && job_index[job] != target)
             job++;
-        assert(job_index[job] == job_count - 1);
+        assert(job_index[job] == target);
     }
     return job;
 }
@@ -185,7 +197,7 @@ int process_command_sequence(struct command_sequence sqnc, int interactive, int 
     for (int j = 0; j < sqnc.cnt && should_continue; j++) {
         // Check for internal commands like fg, bg (could be other)
         if (interactive && strcmp("fg", sqnc.cmds[j].cmdargs[0]) == 0) {
-            int handle = get_job_from_argument(sqnc.cmds[j]);    
+            int handle = get_job_from_argument(sqnc.cmds[j], 0);    
             if (handle == -1) {
                 should_continue = 0;
                 fflush(stderr); // Force error on screen
@@ -206,28 +218,40 @@ int process_command_sequence(struct command_sequence sqnc, int interactive, int 
             }
             printf("\n");
 
-            kill(-pid, SIGCONT); // Minus is to send signal to the entire process group
+            if (job.stopped) {
+                kill(-pid, SIGCONT); // Minus is to send signal to the entire process group
+                jobs[job_index[handle]].stopped = 0; 
+            }
 
             if (tcsetpgrp(shell_terminal, pid) != 0)
                 fail("Failed to set new pg a foreground process group");
 
             siginfo_t info;
+            int exited = 0;
             if (job.process_cnt < 0) {
                 if (waitid(P_PID, pid, &info, WEXITED | WSTOPPED) == -1)
                     fail("Failed to wait for child");
+                if (info.si_code == CLD_EXITED || info.si_code == CLD_KILLED || info.si_code == CLD_DUMPED)
+                    exited++;
             } else {
                 for (int i = 0; i < job.process_cnt; i++) {
                     if (waitid(P_PGID, pid, &info, WEXITED | WSTOPPED) == -1)
                         fail("Failed to wait for child");
                     if (info.si_code == CLD_STOPPED) break;
-                    jobs[job_index[handle]].process_cnt--;
+                    if (info.si_code == CLD_EXITED || info.si_code ==CLD_KILLED || info.si_code == CLD_DUMPED)
+                        exited++;
                 }
             }
+            if (job.process_cnt == -1)
+                jobs[job_index[handle]].process_cnt = exited ? 0 : -1;
+            else
+                jobs[job_index[handle]].process_cnt -= exited;
 
             if (tcsetpgrp(shell_terminal, shell_pgid) != 0)
                 fail("Failed to set shell to foreground");
             switch (info.si_code) {
                 case CLD_STOPPED:
+                    jobs[job_index[handle]].stopped = 1;
                     printf("\n[%d] %d Stopped\n", handle + 1, pid);
                     fflush(stdout);
                     break;
@@ -237,14 +261,18 @@ int process_command_sequence(struct command_sequence sqnc, int interactive, int 
             continue;
         }
         if (interactive && strcmp("bg", sqnc.cmds[j].cmdargs[0]) == 0) {
-            int handle = get_job_from_argument(sqnc.cmds[j]); 
+            int handle = get_job_from_argument(sqnc.cmds[j], 1); 
             if (handle == -1) {
                 should_continue = 0;
                 continue;
             }
 
-            // TODO: send only when its not in background
-            kill(-jobs[job_index[handle]].process, SIGCONT); // Minus is to send signal to the entire process group
+            if (jobs[job_index[handle]].stopped) {
+                kill(-jobs[job_index[handle]].process, SIGCONT); // Minus is to send signal to the entire process group
+                jobs[job_index[handle]].stopped = 0;
+            } else {
+                fprintf(stderr, "Job %d is already in background\n", handle + 1);
+            }
             continue;
         }
 
@@ -308,6 +336,7 @@ int process_command_sequence(struct command_sequence sqnc, int interactive, int 
                 } else if (info.si_code == CLD_STOPPED) {
                     should_continue = 0;
                     int id = add_job(line, sizeof(line), &sqnc.cmds[j - pipe_size + 1], pipe_size, pgid, pipe_size - finished);
+                    jobs[job_index[id]].stopped = 1;
                     printf("\n[%d] %d Stopped\n", id + 1, pgid);
                     fflush(stdout);
                 } else if (info.si_code == CLD_KILLED || info.si_code == CLD_DUMPED) {
@@ -356,33 +385,6 @@ int main() {
     sprintf(prompt,"shell: ");
 
     while (promptline(prompt, line, sizeof(line)) > 0) {    /* until eof  */
-        // Check for completed jobs
-        for (int i = 0; i < JOBS_BUFFER_SIZE; i++) {
-            if (job_index[i] == -1) continue;
-            job_t job = jobs[job_index[i]];
-
-            siginfo_t info;
-            idtype_t type = P_PGID;
-            if (job.process_cnt == -1) { // -1 marks that we need to wait for specific process rather than the whole group
-                type = P_PID;
-            }
-            if (waitid(type, job.process, &info, WEXITED | WNOHANG) != 0) {
-                fprintf(stderr, "Job %d (process %d) failed\n", i + 1, job.process);
-                fail("Failed to wait for a job");
-            }
-
-            if (info.si_code == CLD_EXITED || info.si_code == CLD_KILLED || info.si_code == CLD_DUMPED) {
-                if (job.process_cnt > 0)
-                    jobs[job_index[i]].process_cnt--;
-                else
-                    jobs[job_index[i]].process_cnt = 0;
-            }
-            if (jobs[job_index[i]].process_cnt == 0) {
-                printf("[%d] %d Finished. Exit code: %d\n", i+1, info.si_pid, info.si_status);
-                remove_job(i);
-            }
-        }
-
         if ((nsqnc = parseline(line, sqncs)) < 0) {
             #ifdef DEBUG
             fprintf(stderr, "Unrecognised command\n");
@@ -429,6 +431,7 @@ int main() {
                 }
 
                 int id = add_job(line, sizeof(line), sqncs[i].cmds, sqncs[i].cnt, process, -1);
+                jobs[job_index[id]].stopped = 0;
                 printf("[%d] %d\n", id + 1, process);
                 fflush(stdout);
                 continue; // Next prompt
@@ -436,6 +439,49 @@ int main() {
 
             process_command_sequence(sqncs[i], 1, 0);
         } // close for
+
+        // Check for completed jobs
+        for (int i = 0; i < JOBS_BUFFER_SIZE; i++) {
+            if (job_index[i] == -1) continue;
+            job_t job = jobs[job_index[i]];
+
+            siginfo_t info;
+            int exited = 0;
+            if (job.process_cnt < 0) { // -1 marks that we need to wait for specific process rather than the whole group
+                if (waitid(P_PID, job.process, &info, WEXITED | WSTOPPED | WNOHANG) == -1) {
+                    fprintf(stderr, "Job %d (process %d) failed\n", i + 1, job.process);
+                    fail("Failed to wait for a job");
+                }
+
+                if (info.si_code == CLD_EXITED || info.si_code == CLD_KILLED || info.si_code == CLD_DUMPED)
+                    exited++;
+            } else {
+                for (int j = 0; j < job.process_cnt; j++) {
+                    if (waitid(P_PGID, job.process, &info, WEXITED | WSTOPPED | WNOHANG) == -1) {
+                        fprintf(stderr, "Job %d (process %d) failed\n", i + 1, job.process);
+                        fail("Failed to wait for a job");
+                    }
+
+                    if (info.si_pid == 0 || info.si_code == CLD_STOPPED) break;
+                    if (info.si_code == CLD_EXITED || info.si_code == CLD_KILLED || info.si_code == CLD_DUMPED)
+                        exited++;
+                }
+            }
+            if (job.process_cnt == -1)
+                jobs[job_index[i]].process_cnt = exited ? 0 : -1;
+            else
+                jobs[job_index[i]].process_cnt -= exited;
+
+            if (info.si_code == CLD_STOPPED) {
+                jobs[job_index[i]].stopped = 1;
+                printf("\n[%d] %d Stopped\n", i + 1, jobs[job_index[i]].process);
+                fflush(stdout);
+            }
+            if (jobs[job_index[i]].process_cnt == 0) {
+                printf("[%d] %d Finished. Exit code: %d\n", i+1, info.si_pid, info.si_status);
+                remove_job(i);
+            }
+        }
     } // close while
     for (int i = 0; i < MAXSQNCS; i++)
        free(sqncs[i].cmds);
