@@ -188,6 +188,43 @@ int get_job_from_argument(struct command cmd, char stopped) {
     return job;
 }
 
+void wait_for_job(int handle, int foreground, int options) {
+    job_t *job = &jobs[job_index[handle]];
+    pid_t pid = job->process;
+    if (foreground && tcsetpgrp(shell_terminal, pid) != 0)
+        fail("Failed to set new pg a foreground process group");
+
+    siginfo_t info;
+    int exited = 0;
+    int count = job->process_cnt > 0 ? job->process_cnt : 1;
+    idtype_t type = job->process_cnt > 0 ? P_PGID : P_PID;
+    for (int i = 0; i < count; i++) {
+        if (waitid(type, pid, &info, options) == -1)
+            fail("Failed to wait for child");
+        if (info.si_code == CLD_EXITED || info.si_code == CLD_KILLED || info.si_code == CLD_DUMPED)
+            exited++;
+    }
+    if (job->process_cnt == -1)
+        job->process_cnt = exited ? 0 : -1;
+    else
+        job->process_cnt -= exited;
+
+    if (foreground && tcsetpgrp(shell_terminal, shell_pgid) != 0)
+        fail("Failed to set shell to foreground");
+
+    if (info.si_code == CLD_STOPPED) {
+        jobs[job_index[handle]].stopped = 1;
+        printf("\n[%d] %d Stopped\n", handle + 1, info.si_pid);
+        fflush(stdout);
+    }
+
+    if (jobs[job_index[handle]].process_cnt == 0) {
+        if (!foreground)
+            printf("[%d] %d Finished. Exit code: %d\n", handle+1, info.si_pid, info.si_status);
+        remove_job(handle);
+    }
+}
+
 // if pgid is zero commands are non-blocking under this shell
 int process_command_sequence(struct command_sequence sqnc, int interactive, int orig_pgid) {
     int should_continue = 1;
@@ -223,41 +260,8 @@ int process_command_sequence(struct command_sequence sqnc, int interactive, int 
                 jobs[job_index[handle]].stopped = 0; 
             }
 
-            if (tcsetpgrp(shell_terminal, pid) != 0)
-                fail("Failed to set new pg a foreground process group");
+            wait_for_job(handle, 1, WEXITED | WSTOPPED);
 
-            siginfo_t info;
-            int exited = 0;
-            if (job.process_cnt < 0) {
-                if (waitid(P_PID, pid, &info, WEXITED | WSTOPPED) == -1)
-                    fail("Failed to wait for child");
-                if (info.si_code == CLD_EXITED || info.si_code == CLD_KILLED || info.si_code == CLD_DUMPED)
-                    exited++;
-            } else {
-                for (int i = 0; i < job.process_cnt; i++) {
-                    if (waitid(P_PGID, pid, &info, WEXITED | WSTOPPED) == -1)
-                        fail("Failed to wait for child");
-                    if (info.si_code == CLD_STOPPED) break;
-                    if (info.si_code == CLD_EXITED || info.si_code ==CLD_KILLED || info.si_code == CLD_DUMPED)
-                        exited++;
-                }
-            }
-            if (job.process_cnt == -1)
-                jobs[job_index[handle]].process_cnt = exited ? 0 : -1;
-            else
-                jobs[job_index[handle]].process_cnt -= exited;
-
-            if (tcsetpgrp(shell_terminal, shell_pgid) != 0)
-                fail("Failed to set shell to foreground");
-            switch (info.si_code) {
-                case CLD_STOPPED:
-                    jobs[job_index[handle]].stopped = 1;
-                    printf("\n[%d] %d Stopped\n", handle + 1, pid);
-                    fflush(stdout);
-                    break;
-                default:
-                    remove_job(handle);
-            }
             continue;
         }
         if (interactive && strcmp("bg", sqnc.cmds[j].cmdargs[0]) == 0) {
@@ -322,11 +326,13 @@ int process_command_sequence(struct command_sequence sqnc, int interactive, int 
                 siginfo_t info;
                 int events = interactive ? WEXITED | WSTOPPED : WEXITED;
                 int finished = 0;
-                for (; finished < pipe_size; finished++) {
+                for (int i = 0; i < pipe_size; i++) {
                     if (waitid(P_PGID, pgid, &info, events) == -1)
                         fail("Failed to wait for child");
-                    if (info.si_code == CLD_STOPPED) break;
+                    if (info.si_code == CLD_EXITED || info.si_code == CLD_KILLED || info.si_code == CLD_DUMPED)
+                        finished++;
                 }
+                fflush(stdout);
 
                 if (interactive && tcsetpgrp(shell_terminal, shell_pgid) != 0)
                     fail("Failed to set shell to foreground");
@@ -443,44 +449,8 @@ int main() {
         // Check for completed jobs
         for (int i = 0; i < JOBS_BUFFER_SIZE; i++) {
             if (job_index[i] == -1) continue;
-            job_t job = jobs[job_index[i]];
 
-            siginfo_t info;
-            int exited = 0;
-            if (job.process_cnt < 0) { // -1 marks that we need to wait for specific process rather than the whole group
-                if (waitid(P_PID, job.process, &info, WEXITED | WSTOPPED | WNOHANG) == -1) {
-                    fprintf(stderr, "Job %d (process %d) failed\n", i + 1, job.process);
-                    fail("Failed to wait for a job");
-                }
-
-                if (info.si_code == CLD_EXITED || info.si_code == CLD_KILLED || info.si_code == CLD_DUMPED)
-                    exited++;
-            } else {
-                for (int j = 0; j < job.process_cnt; j++) {
-                    if (waitid(P_PGID, job.process, &info, WEXITED | WSTOPPED | WNOHANG) == -1) {
-                        fprintf(stderr, "Job %d (process %d) failed\n", i + 1, job.process);
-                        fail("Failed to wait for a job");
-                    }
-
-                    if (info.si_pid == 0 || info.si_code == CLD_STOPPED) break;
-                    if (info.si_code == CLD_EXITED || info.si_code == CLD_KILLED || info.si_code == CLD_DUMPED)
-                        exited++;
-                }
-            }
-            if (job.process_cnt == -1)
-                jobs[job_index[i]].process_cnt = exited ? 0 : -1;
-            else
-                jobs[job_index[i]].process_cnt -= exited;
-
-            if (info.si_code == CLD_STOPPED) {
-                jobs[job_index[i]].stopped = 1;
-                printf("\n[%d] %d Stopped\n", i + 1, jobs[job_index[i]].process);
-                fflush(stdout);
-            }
-            if (jobs[job_index[i]].process_cnt == 0) {
-                printf("[%d] %d Finished. Exit code: %d\n", i+1, info.si_pid, info.si_status);
-                remove_job(i);
-            }
+            wait_for_job(i, 0, WEXITED | WSTOPPED | WNOHANG);
         }
     } // close while
     for (int i = 0; i < MAXSQNCS; i++)
