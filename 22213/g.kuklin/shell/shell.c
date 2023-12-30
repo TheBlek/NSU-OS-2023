@@ -327,17 +327,18 @@ int process_command_sequence(struct command_sequence sqnc, int interactive, int 
                 for (int i = 0; i < pipe_size; i++) {
                     if (waitid(P_PGID, pgid, &info, events) == -1)
                         fail("Failed to wait for child");
-                    if (info.si_code == CLD_EXITED || info.si_code == CLD_KILLED || info.si_code == CLD_DUMPED)
+                    if (info.si_code == CLD_EXITED || info.si_code == CLD_KILLED || info.si_code == CLD_DUMPED) {
                         finished++;
+                        if (info.si_status != 0)
+                            should_continue = 0;
+                    }
                 }
                 fflush(stdout);
 
                 if (interactive && tcsetpgrp(shell_terminal, shell_pgid) != 0)
                     fail("Failed to set shell to foreground");
 
-                if (info.si_code == CLD_EXITED) {
-                    should_continue = !info.si_status;
-                } else if (info.si_code == CLD_STOPPED) {
+                if (info.si_code == CLD_STOPPED) {
                     should_continue = 0;
                     int id = add_job(line, sizeof(line), &sqnc.cmds[j - pipe_size + 1], pipe_size, pgid, pipe_size - finished);
                     jobs[job_index[id]].stopped = 1;
@@ -409,9 +410,6 @@ int main() {
             }
         }
         #endif
-
-        if (nsqnc == 0)
-            continue;
 
         for (int i = 0; i < nsqnc; i++) {
             if (sqncs[i].background) {
