@@ -1,4 +1,4 @@
-main: shell.c promptline.c parseline.c
-	gcc shell.c promptline.c parseline.c -o shell -Wall -Wextra -g -DDEBUG
+debug: shell.c promptline.c parseline.c
+	gcc shell.c promptline.c parseline.c -o debug -Wall -Wextra -g -DDEBUG
 release: shell.c promptline.c parseline.c
-	gcc shell.c promptline.c parseline.c -o shell -Wall -Wextra -O2
+	gcc shell.c promptline.c parseline.c -o release -Wall -Wextra -O2
