@@ -335,7 +335,7 @@ int process_command_sequence(struct command_sequence sqnc, int interactive, int 
                         fail("Failed to wait for child");
                     if (info.si_code == CLD_EXITED || info.si_code == CLD_KILLED || info.si_code == CLD_DUMPED) {
                         finished++;
-                        if (info.si_status != 0)
+                        if (info.si_pid == child)
                             exit_code = info.si_status;
                     }
                 }
