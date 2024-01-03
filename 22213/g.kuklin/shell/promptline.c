@@ -25,7 +25,20 @@ int promptline(char *prompt, char *line, int sizline) {
             perror("Failed to read next prompt");
             exit(1);
         }
-        if (more == 0) return -1; // EOF
+        if (more == 0) {
+            if (n == sizline) {
+                int res;
+                do {
+                    res = read(0, line, sizline);
+                    if (res == -1) {
+                        perror("Failed to read leftovers");
+                        exit(1);
+                    }
+                } while (res == sizline);
+                fprintf(stderr, "Prompt is too large\n");
+            }
+            return -1; // EOF
+        }
 
         for (int i = n; i < more + n; i++)
             stray_quote = (stray_quote + (*(line + i) == '"')) % 2;

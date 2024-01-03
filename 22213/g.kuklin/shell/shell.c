@@ -93,7 +93,8 @@ void run_child(struct command cmd, pid_t pgid, int prev_pipe, int cur_pipe, char
     signal(SIGTSTP, SIG_DFL);
 
     execvp(cmd.cmdargs[0], cmd.cmdargs);
-    char message[1024] = "Failed to execute command ";
+    // MAX_LINE_WIDTH is 1024, so 1080 should be enough for this
+    char message[1080] = "Failed to execute command ";
     fail(strcat(message, cmd.cmdargs[0]));
 }
 
@@ -214,7 +215,7 @@ void wait_for_job(int handle, int foreground, int options) {
 
     if (info.si_code == CLD_STOPPED) {
         jobs[job_index[handle]].stopped = 1;
-        printf("\n[%d] %d Stopped\n", handle + 1, info.si_pid);
+        printf("\n[%d] %d Stopped\n", handle + 1, pid);
         fflush(stdout);
     }
 
